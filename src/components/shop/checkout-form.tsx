@@ -26,6 +26,7 @@ import type { CartItem } from "@/features/cart/types";
 import { clearStoredCart, loadCart } from "@/features/cart/storage";
 import { createOrder } from "@/features/orders/actions";
 import { uploadProofByToken } from "@/features/cart/upload-proof-by-token";
+import { compressImage } from "@/lib/compress-image";
 import { formatCop } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -133,9 +134,10 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
       let proofPath: string | undefined;
 
       if (values.paymentMethod !== "cash" && proofFile) {
+        const compressed = await compressImage(proofFile);
         const fd = new FormData();
         fd.set("token", token);
-        fd.set("file", proofFile);
+        fd.set("file", compressed);
         const uploadResult = await uploadProofByToken(fd);
         if (!uploadResult.ok) {
           toast.error(uploadResult.error);
