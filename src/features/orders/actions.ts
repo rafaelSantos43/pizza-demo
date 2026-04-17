@@ -115,21 +115,13 @@ export async function createOrder(
   const { customerId, tokenId } = tokenResult;
 
   try {
-    const { data: customerRow, error: customerErr } = await supabaseAdmin
+    // El nombre del checkout siempre gana — es el cliente confirmando
+    // cómo quiere que lo llamemos en este pedido.
+    const { error: nameErr } = await supabaseAdmin
       .from("customers")
-      .select("name")
-      .eq("id", customerId)
-      .maybeSingle();
-    if (customerErr) throw customerErr;
-
-    const currentName = (customerRow as { name: string | null } | null)?.name;
-    if (!currentName) {
-      const { error: nameErr } = await supabaseAdmin
-        .from("customers")
-        .update({ name: data.customerName })
-        .eq("id", customerId);
-      if (nameErr) throw nameErr;
-    }
+      .update({ name: data.customerName })
+      .eq("id", customerId);
+    if (nameErr) throw nameErr;
 
     const addressInsert = {
       customer_id: customerId,

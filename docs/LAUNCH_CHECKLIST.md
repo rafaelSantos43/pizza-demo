@@ -4,7 +4,7 @@
 >
 > **Cómo se usa:** tachar ítems con `- [x]` conforme se completen. No mezclar con ENGRAM (que es decisiones) ni con PRD (que es alcance).
 
-**Última revisión:** 2026-04-17 (antes de primera conversación de venta)
+**Última revisión:** 2026-04-17 (A1-A6 completados; demo en producción corriendo en https://pizza-demo-five.vercel.app)
 
 ---
 
@@ -12,13 +12,13 @@
 
 Sin esto no hay producto, hay prototipo. **Todo lo que hay en el repo corre en demo mode (memoria) — nunca se ha probado un pedido real contra Supabase.** Esa es la brecha que cierra este bloque.
 
-- [ ] **A1.** Supabase project montado (free tier), URL + ANON_KEY + SERVICE_ROLE_KEY en `.env.local`
-- [ ] **A2.** `bunx supabase db push` aplica las 4 migrations limpio
-- [ ] **A3.** `bunx supabase db seed --linked` carga las 33 pizzas + settings
-- [ ] **A4.** Admin profile creado en Supabase Studio (`INSERT INTO profiles...` con el email del dev)
-- [ ] **A5.** **UN pedido end-to-end probado de verdad** — desde celular al catálogo → arma carrito → confirma → aparece en `/pedidos` → transicionar estados. **Este es el gap crítico.**
-- [ ] **A6.** Deploy a Vercel (o ngrok tunnel) con URL pública que se pueda compartir
-- [ ] **A7.** Video Loom de 2 min mostrando el flujo completo. Grabar DESPUÉS de A5.
+- [x] **A1.** Supabase project montado (free tier), URL + ANON_KEY + SERVICE_ROLE_KEY en `.env.local`
+- [x] **A2.** `bunx supabase db push` aplica las 4 migrations limpio (0003 pg_cron skipped — requiere Pro)
+- [x] **A3.** Seed aplicado vía Studio (33 pizzas + settings)
+- [x] **A4.** Admin profile creado en Supabase Studio
+- [x] **A5.** **UN pedido end-to-end probado de verdad** — desde celular al catálogo → arma carrito → confirma → aparece en `/pedidos` → transicionar estados
+- [x] **A6.** Deploy a Vercel con URL pública: https://pizza-demo-five.vercel.app
+- [ ] **A7.** Video Loom de 2 min mostrando el flujo completo.
 - [ ] **A8.** Pitch de 60 segundos memorizado (no leído). Ancla en UN dolor concreto, no en features.
 
 ---
@@ -31,6 +31,7 @@ Meta tarda 3-4 semanas en aprobar WhatsApp Business Cloud + plantillas. Mientras
 - [ ] **B2.** Botón "Nuevo pedido manual" en el panel: cajero ingresa teléfono + nombre → sistema genera token → muestra link copiable para pegar en WhatsApp personal. Reemplaza al webhook de F1 mientras Meta se aprueba.
 - [ ] **B3.** Mensajes copiables en cada transición de estado: toast o modal con "copia este texto y pégalo en WhatsApp" (reemplazo manual de F6 hasta que Meta esté activo).
 - [ ] **B4.** Botón copy-to-clipboard de dirección en cards del panel y vista mensajero (para pegar en Maps sin retipear).
+- [ ] **B5.** **Autocomplete del cliente recurrente en checkout** (PRD §F2, prometido pero no construido). Query `getCustomerByToken` que devuelva `{ name, addresses[] }`; form hidrata `defaultValues` y agrega selector "Usar dirección guardada" si el cliente ya tiene direcciones. Sin esto los clientes de semana 2+ se cansan de re-llenar todo.
 
 Tiempo estimado: ~1 día.
 
@@ -45,6 +46,16 @@ Tiempo estimado: ~1 día.
 - ❌ **Upload nativo de imágenes de producto**: admin pega URL por ahora (Imgur/Cloudinary).
 - ❌ **Export CSV/JSON**, **banner plan vencido**, **panel super-admin**: se agregan al momento de necesitarlos con un cliente real, no antes.
 - ❌ **Schema refactor para productos no-pizza** (hamburguesas, bebidas, etc.): bloqueado hasta que el cliente lo pida — la mayoría de pizzerías venden mayormente pizzas.
+
+---
+
+## Bloque D — Ajustes de copy/UX pendientes de feedback real
+
+Cambios pequeños identificados durante el dev que NO se tocan hasta que un cliente real los pida. Principio: no inventar objeciones.
+
+- [ ] **D1.** Selector de zona en checkout: `{zona} (~{min} min)` → `{zona} (aprox. {min} min)`. Palabra completa en lugar de símbolo. Solo aplicar si un cliente dice que el `~` confunde.
+- [ ] **D2.** ETA como rango (`25–35 min` en lugar de `30 min`). Requiere cambio de schema (`eta_min_low` + `eta_min_high`). Hacerlo si un cliente pide más honestidad en la expectativa.
+- [ ] **D3.** Ocultar ETA del selector de zona (solo mostrar nombre, sin tiempo). Solo si un cliente no quiere comprometer tiempos por política.
 
 ---
 
