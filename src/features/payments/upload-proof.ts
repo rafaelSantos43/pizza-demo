@@ -75,5 +75,3 @@ export async function uploadPaymentProof(
     return { ok: false, error: "No pudimos subir el comprobante." };
   }
 }
-
-export { ALLOWED_PROOF_MIME };
