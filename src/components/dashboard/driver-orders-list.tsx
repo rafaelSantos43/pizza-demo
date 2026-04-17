@@ -1,0 +1,69 @@
+"use client";
+
+import { Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useEffect, useTransition } from "react";
+
+import { DriverOrderCard } from "@/components/dashboard/driver-order-card";
+import type { StaffRole } from "@/features/auth/queries";
+import type { OrderSummary } from "@/features/orders/types";
+import { isDemoMode } from "@/lib/demo";
+import { createClient } from "@/lib/supabase/client";
+
+interface DriverOrdersListProps {
+  initial: OrderSummary[];
+  viewerRole: StaffRole;
+  viewerId: string;
+}
+
+export function DriverOrdersList({
+  initial,
+  viewerRole,
+}: DriverOrdersListProps) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+
+  useEffect(() => {
+    // En demo no hay Supabase real al que conectarse.
+    if (isDemoMode()) return;
+
+    const supabase = createClient();
+    const channel = supabase
+      .channel("driver-orders-feed")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "orders" },
+        () => {
+          startTransition(() => {
+            router.refresh();
+          });
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [router]);
+
+  return (
+    <>
+      {isPending ? (
+        <div className="pointer-events-none fixed top-3 right-3 z-40 flex items-center gap-2 rounded-full bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm ring-1 ring-border">
+          <Loader2 className="size-3.5 animate-spin" />
+          Actualizando…
+        </div>
+      ) : null}
+
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-3">
+        {initial.map((order) => (
+          <DriverOrderCard
+            key={order.id}
+            order={order}
+            viewerRole={viewerRole}
+          />
+        ))}
+      </div>
+    </>
+  );
+}

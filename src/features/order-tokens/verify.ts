@@ -1,0 +1,77 @@
+import "server-only";
+
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+
+import { isDemoMode } from "@/lib/demo";
+import { getServerEnv } from "@/lib/env";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+
+import type { VerifyResult } from "./schemas";
+
+function base64urlToBuffer(input: string): Buffer {
+  const pad = input.length % 4 === 0 ? "" : "=".repeat(4 - (input.length % 4));
+  const b64 = input.replace(/-/g, "+").replace(/_/g, "/") + pad;
+  return Buffer.from(b64, "base64");
+}
+
+function sha256Hex(input: string): string {
+  return createHash("sha256").update(input).digest("hex");
+}
+
+// 2-step: verify SOLO lee. createOrder marca used_at. Así el catálogo sigue
+// vigente si el cliente refresca antes de confirmar.
+export async function verifyToken(token: string): Promise<VerifyResult> {
+  if (isDemoMode()) {
+    if (token === "demo") {
+      return {
+        ok: true,
+        customerId: "00000000-0000-4000-8000-00000000c001",
+        tokenId: "00000000-0000-4000-8000-000000000001",
+      };
+    }
+    return { ok: false, reason: "malformed" };
+  }
+
+  const parts = token.split(".");
+  if (parts.length !== 3) return { ok: false, reason: "malformed" };
+
+  const [id, iatPart, sigPart] = parts;
+  if (!id || !iatPart || !sigPart) return { ok: false, reason: "malformed" };
+
+  const payload = `${id}.${iatPart}`;
+  const expected = createHmac("sha256", getServerEnv().ORDER_TOKEN_SECRET)
+    .update(payload)
+    .digest();
+  const provided = base64urlToBuffer(sigPart);
+
+  if (
+    expected.length !== provided.length ||
+    !timingSafeEqual(expected, provided)
+  ) {
+    return { ok: false, reason: "invalid_signature" };
+  }
+
+  const tokenHash = sha256Hex(token);
+  const { data, error } = await supabaseAdmin
+    .from("order_tokens")
+    .select("id, customer_id, expires_at, used_at")
+    .eq("token_hash", tokenHash)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return { ok: false, reason: "not_found" };
+
+  const row = data as {
+    id: string;
+    customer_id: string;
+    expires_at: string;
+    used_at: string | null;
+  };
+
+  if (new Date(row.expires_at).getTime() < Date.now()) {
+    return { ok: false, reason: "expired" };
+  }
+  if (row.used_at) return { ok: false, reason: "used" };
+
+  return { ok: true, customerId: row.customer_id, tokenId: row.id };
+}
