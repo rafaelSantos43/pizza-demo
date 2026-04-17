@@ -16,15 +16,16 @@ export default async function MensajeroPage() {
   const driverFilter = staff.role === "driver" ? staff.id : null;
   const orders = await listOrdersForDriver(driverFilter);
 
-  const subtitle =
-    staff.role === "driver"
-      ? "Tus pedidos del momento"
-      : "Pedidos en ruta — todos los domiciliarios";
+  const isDriver = staff.role === "driver";
+  const title = isDriver ? "Tus pedidos asignados" : "Mensajero";
+  const subtitle = isDriver
+    ? "Solo tú ves estos pedidos"
+    : "Pedidos en ruta — todos los domiciliarios";
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="font-serif text-3xl text-foreground">Mensajero</h1>
+        <h1 className="font-serif text-3xl text-foreground">{title}</h1>
         <p className="text-sm text-muted-foreground">{subtitle}</p>
       </header>
 

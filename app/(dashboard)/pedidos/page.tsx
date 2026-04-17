@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
 import { OrdersBoard } from "@/components/dashboard/orders-board";
 import { requireStaff } from "@/features/auth/guards";
@@ -59,9 +60,16 @@ export default async function PedidosPage({
 }: {
   searchParams: Promise<{ filter?: string }>;
 }) {
-  const [{ filter: filterParam }, staff, allOrders, drivers] = await Promise.all([
+  const staff = await requireStaff();
+
+  // Drivers solo operan desde /mensajero. Si intentan entrar a /pedidos
+  // manualmente, los mandamos a su vista.
+  if (staff.role === "driver") {
+    redirect("/mensajero");
+  }
+
+  const [{ filter: filterParam }, allOrders, drivers] = await Promise.all([
     searchParams,
-    requireStaff(),
     listActiveOrders(),
     listActiveDrivers(),
   ]);

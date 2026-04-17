@@ -38,7 +38,12 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { href: "/pedidos", label: "Pedidos", icon: ClipboardList },
+  {
+    href: "/pedidos",
+    label: "Pedidos",
+    icon: ClipboardList,
+    roles: ["admin", "cashier", "kitchen"],
+  },
   { href: "/mensajero", label: "Mensajero", icon: Bike },
   { href: "/menu", label: "Menú", icon: Pizza, roles: ["admin"] },
   {

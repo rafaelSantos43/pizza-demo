@@ -24,6 +24,23 @@ if (!url || !serviceKey) {
 
 const admin = createClient(url, serviceKey);
 
+// Crea el user si no existe (admin.generateLink con type=magiclink falla si
+// el user no existe todavía). Si ya existe, devuelve error "already" que
+// ignoramos.
+const { error: createErr } = await admin.auth.admin.createUser({
+  email,
+  email_confirm: true,
+});
+if (createErr) {
+  const msg = createErr.message.toLowerCase();
+  const isAlreadyExists =
+    msg.includes("already") || msg.includes("registered") || msg.includes("exists");
+  if (!isAlreadyExists) {
+    console.error("Error creando user:", createErr.message);
+    process.exit(1);
+  }
+}
+
 const { data, error } = await admin.auth.admin.generateLink({
   type: "magiclink",
   email,
