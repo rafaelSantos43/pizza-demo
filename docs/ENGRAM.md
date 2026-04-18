@@ -39,6 +39,23 @@
 
 ## Decisiones tomadas (log en orden cronológico inverso)
 
+### 2026-04-18 — Validar pago aprobado antes de asignar driver (fix bug)
+**Qué:** [src/features/orders/actions.ts](../src/features/orders/actions.ts) `assignDriver()` agregó 3 validaciones que faltaban:
+1. **Estado del pedido permitido**: rechaza asignación si status ∉ `["payment_approved", "preparing", "ready", "on_the_way"]`. Previene asignar domiciliario mientras está en `awaiting_payment`.
+2. **Validar driver existe**: si `driverId != null`, confirma que existe en `staff` table con `role='driver'` (evita asignar a UUID inválido).
+3. **Warning visual en UI**: [src/components/dashboard/order-detail-sheet.tsx](../src/components/dashboard/order-detail-sheet.tsx) `DriverAssignment` muestra alerta ámbar + deshabilita selector si status no es asignable. Mensaje diferenciado: "Aprueba el comprobante de pago antes de asignar" si `awaiting_payment`.
+
+**Por qué:** bug reportado: se podía asignar un repartidor a un pedido con pago digital pendiente, permitiendo que la cocina preparara sin confirmar dinero. Riesgo de pérdida de comida.
+
+**Cómo aplica:**
+- Flow correcto: Cliente paga (estado → `payment_approved` automático si efectivo, o staff aprueba comprobante → `payment_approved`) → **ahora sí** se puede asignar driver.
+- Backend rechaza con error descriptivo; frontend lo captura y muestra toast.
+- Reasignación sigue permitida en tránsito (status `on_the_way`), usado si el driver se descompone.
+
+### 2026-04-18 — Comandos PowerShell en DEMO_RUNBOOK
+**Qué:** [docs/DEMO_RUNBOOK.md](../docs/DEMO_RUNBOOK.md) actualizó sintaxis de los comandos `gen-login-link.ts` y `gen-order-link.ts` para Windows PowerShell: variables de entorno con `$env:VAR="value"; command` (no bare assignment).
+**Por qué:** user en Windows ejecutó la sintaxis bash y PowerShell lo interpretó como invocación de comando, rompiendo con `CommandNotFoundException`. La sintaxis correcta requiere comillas y punto-y-coma.
+
 ### 2026-04-17 — Launch checklist (A/B/C) + no customizar antes del "sí"
 **Qué:** [docs/LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md) documenta explícitamente el split entre (A) lo que falta para poder vender, (B) lo que se construye después del commit verbal del cliente, y (C) lo que queda fuera hasta segundo aviso (PrintNode, webhook WhatsApp activo, multi-branch, etc.).
 **Por qué:** tras ver las 3 sedes de Pizzas Family (Campiña/Bello Horizonte/Santander) y la tentación de agregar multi-branch, el dueño tomó la decisión correcta: **congelar toda customización específica a un cliente hasta tener "sí" verbal**. El sistema queda genérico (single-location) y el primer cliente decide cuál feature rompe el "fuera de scope".

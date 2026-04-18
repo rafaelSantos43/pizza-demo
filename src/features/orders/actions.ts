@@ -440,6 +440,48 @@ export async function assignDriver(input: {
   const { orderId, driverId } = parsed.data;
 
   try {
+    // Cargar estado actual del pedido
+    const { data: currentOrder, error: loadErr } = await supabaseAdmin
+      .from("orders")
+      .select("status, payment_approved_at, payment_method")
+      .eq("id", orderId)
+      .single();
+
+    if (loadErr || !currentOrder) {
+      return { ok: false, error: "Pedido no encontrado" };
+    }
+
+    // Guard: estado válido para asignar
+    const ASSIGNABLE_STATUSES = [
+      "payment_approved",
+      "preparing",
+      "ready",
+      "on_the_way",
+    ] as const;
+    if (!ASSIGNABLE_STATUSES.includes(currentOrder.status as any)) {
+      return {
+        ok: false,
+        error: `No se puede asignar en estado '${currentOrder.status}'. El pago debe ser aprobado primero.`,
+      };
+    }
+
+    // Guard: si se intenta asignar un driver, validar que existe
+    if (driverId) {
+      const { data: driver, error: driverErr } = await supabaseAdmin
+        .from("staff")
+        .select("id, role")
+        .eq("id", driverId)
+        .eq("role", "driver")
+        .single();
+
+      if (driverErr || !driver) {
+        return {
+          ok: false,
+          error: "El domiciliario no existe o no tiene rol válido.",
+        };
+      }
+    }
+
     const { error } = await supabaseAdmin
       .from("orders")
       .update({ driver_id: driverId })

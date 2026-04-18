@@ -98,7 +98,11 @@ Pega la URL que imprime en el browser → llegas al panel.
 ### Paso 2 — Crear un usuario driver de prueba (una vez)
 
 ```bash
+# macOS / Linux:
 NEXT_PUBLIC_APP_URL=https://pizza-demo-five.vercel.app bun scripts/gen-login-link.ts driver1@test.local
+
+# Windows PowerShell:
+$env:NEXT_PUBLIC_APP_URL="https://pizza-demo-five.vercel.app"; bun scripts/gen-login-link.ts driver1@test.local
 ```
 
 Copia la URL. Luego en Supabase Studio → SQL Editor:
@@ -249,20 +253,31 @@ Con mis valores concretos ya puestos. Si cambias de email o teléfono, ajusta.
 ### Regenerar sesión admin (mi cuenta principal)
 
 ```bash
+# macOS / Linux:
 NEXT_PUBLIC_APP_URL=https://pizza-demo-five.vercel.app bun scripts/gen-login-link.ts devdesarrollo96@gmail.com
+
+# Windows PowerShell:
+$env:NEXT_PUBLIC_APP_URL="https://pizza-demo-five.vercel.app"; bun scripts/gen-login-link.ts devdesarrollo96@gmail.com
 ```
 
 ### Regenerar sesión driver de prueba (Camilo)
 
 ```bash
+# macOS / Linux:
 NEXT_PUBLIC_APP_URL=https://pizza-demo-five.vercel.app bun scripts/gen-login-link.ts driver1@test.local
+
+# Windows PowerShell:
+$env:NEXT_PUBLIC_APP_URL="https://pizza-demo-five.vercel.app"; bun scripts/gen-login-link.ts driver1@test.local
 ```
 
 ### Generar link de pedido para un cliente
 
 ```bash
-# Cambia el +57... y el nombre como quieras
+# macOS / Linux:
 NEXT_PUBLIC_APP_URL=https://pizza-demo-five.vercel.app bun scripts/gen-order-link.ts +573001112233 "Cliente"
+
+# Windows PowerShell:
+$env:NEXT_PUBLIC_APP_URL="https://pizza-demo-five.vercel.app"; bun scripts/gen-order-link.ts +573001112233 "Cliente"
 ```
 
 ### Rutinas frecuentes

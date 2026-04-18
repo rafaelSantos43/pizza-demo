@@ -538,6 +538,14 @@ function DriverAssignment({
     detail.driver_id ?? UNASSIGNED_VALUE,
   );
 
+  const ASSIGNABLE_STATUSES = [
+    "payment_approved",
+    "preparing",
+    "ready",
+    "on_the_way",
+  ];
+  const canAssign = ASSIGNABLE_STATUSES.includes(detail.status);
+
   if (drivers.length === 0) {
     return (
       <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
@@ -570,10 +578,20 @@ function DriverAssignment({
       <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         {label}
       </span>
+      {!canAssign && (
+        <div className="rounded-md bg-amber-50 px-3 py-2 flex gap-2 items-start">
+          <AlertCircle className="size-4 mt-0.5 text-amber-700 flex-shrink-0" />
+          <p className="text-xs text-amber-800">
+            {detail.status === "awaiting_payment"
+              ? "Aprueba el comprobante de pago antes de asignar."
+              : `No se puede asignar en estado "${statusLabel(detail.status)}".`}
+          </p>
+        </div>
+      )}
       <Select
         value={value}
         onValueChange={handleChange}
-        disabled={disabled || pending}
+        disabled={disabled || pending || !canAssign}
       >
         <SelectTrigger className="h-11 w-full">
           <SelectValue placeholder="Selecciona un domiciliario" />
