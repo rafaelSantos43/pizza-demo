@@ -55,7 +55,8 @@ Cambios pequeños identificados durante el dev que NO se tocan hasta que un clie
 
 - [ ] **D1.** Selector de zona en checkout: `{zona} (~{min} min)` → `{zona} (aprox. {min} min)`. Palabra completa en lugar de símbolo. Solo aplicar si un cliente dice que el `~` confunde.
 - [ ] **D2.** ETA como rango (`25–35 min` en lugar de `30 min`). Requiere cambio de schema (`eta_min_low` + `eta_min_high`). Hacerlo si un cliente pide más honestidad en la expectativa.
-- [ ] **D3.** Ocultar ETA del selector de zona (solo mostrar nombre, sin tiempo). Solo si un cliente no quiere comprometer tiempos por política.
+- [ ] **D3.** Ocultar ETA del selector de zona (solo mostrar nombre, sin tiempo). Solo si un cliente no quiere comprometer tiempos por política. (Resuelto parcialmente 2026-04-20: la zona se sacó del checkout entero, ver ENGRAM.)
+- [ ] **D4.** Modelo de cobro de domicilio. Hoy el sistema asume "domicilio incluido en el precio" ([ENGRAM 2026-04-16](ENGRAM.md)). Validar con el primer cliente real si: (a) sigue así, (b) se cobra fijo (ej. $7.000), o (c) varía por zona. Si cambia → ~1-2h de trabajo: migration con `delivery_cost_cents` en `orders` (o config en `settings.delivery_zones`), suma en `createOrder` al `total_cents`, línea "Domicilio: $X" en checkout / `/gracias` / panel staff, copy de políticas actualizado, ENGRAM revertido.
 
 ---
 

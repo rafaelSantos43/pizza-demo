@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
 import { OrderCard } from "@/components/dashboard/order-card";
-import { OrderDetailSheet } from "@/components/dashboard/order-detail-sheet";
+import { OrderDetailSheet } from "@/components/dashboard/order-detail";
 import type { ActiveDriver, CurrentStaff } from "@/features/auth/queries";
 import type { OrderSummary } from "@/features/orders/types";
 import { createClient } from "@/lib/supabase/client";
@@ -23,21 +23,31 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
 
   useEffect(() => {
     const supabase = createClient();
-    const channel = supabase
-      .channel("orders-feed")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "orders" },
-        () => {
-          startTransition(() => {
-            router.refresh();
-          });
-        },
-      )
-      .subscribe();
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let cancelled = false;
+
+    (async () => {
+      // Sin esto los eventos no llegan: el cliente Realtime pasa por anon
+      // y la policy `for select to authenticated` los filtra silenciosamente.
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) await supabase.realtime.setAuth(session.access_token);
+      if (cancelled) return;
+
+      channel = supabase
+        .channel("orders-feed")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "orders" },
+          () => {
+            startTransition(() => router.refresh());
+          },
+        )
+        .subscribe();
+    })();
 
     return () => {
-      supabase.removeChannel(channel);
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel);
     };
   }, [router]);
 

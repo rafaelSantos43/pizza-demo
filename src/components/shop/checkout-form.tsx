@@ -1,7 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Building, Building2, Home, Info, Loader2, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -32,16 +32,25 @@ import { cn } from "@/lib/utils";
 
 const PAYMENT_METHODS = ["cash", "bancolombia", "nequi", "llave"] as const;
 
+const HOUSING_TYPES = ["casa", "edificio", "conjunto"] as const;
+type HousingType = (typeof HOUSING_TYPES)[number];
+
+const HOUSING_OPTIONS: { value: HousingType; label: string; icon: typeof Home }[] = [
+  { value: "casa", label: "Casa", icon: Home },
+  { value: "edificio", label: "Edificio", icon: Building },
+  { value: "conjunto", label: "Conjunto", icon: Building2 },
+];
+
 const checkoutFormSchema = z
   .object({
     customerName: z.string().min(1, "Tu nombre es obligatorio"),
+    housingType: z.enum(HOUSING_TYPES),
     street: z.string().min(1, "La dirección es obligatoria"),
     complex_name: z.string().optional(),
     tower: z.string().optional(),
     apartment: z.string().optional(),
     neighborhood: z.string().optional(),
     references: z.string().optional(),
-    zone: z.string().min(1, "Selecciona la zona"),
     paymentMethod: z.enum(PAYMENT_METHODS),
     notes: z.string().optional(),
     acceptedPolicies: z.literal(true, {
@@ -81,27 +90,45 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
     resolver: zodResolver(checkoutFormSchema),
     defaultValues: {
       customerName: "",
+      housingType: "casa",
       street: "",
       complex_name: "",
       tower: "",
       apartment: "",
       neighborhood: "",
       references: "",
-      zone: settings.delivery_zones[0]?.zone ?? "",
       paymentMethod: "cash",
       notes: "",
       acceptedPolicies: false as unknown as true,
     },
   });
 
-  const { register, handleSubmit, control, watch, formState } = form;
+  const { register, handleSubmit, control, watch, setValue, formState } = form;
   const paymentMethod = watch("paymentMethod");
+  const housingType = watch("housingType");
   const needsProof = paymentMethod !== "cash";
+
+  function handleHousingChange(next: HousingType) {
+    setValue("housingType", next);
+    if (next === "casa") {
+      setValue("complex_name", "");
+      setValue("tower", "");
+      setValue("apartment", "");
+    } else if (next === "edificio") {
+      setValue("tower", "");
+    }
+  }
 
   const total = cartItems.reduce(
     (sum, it) => sum + it.unitPriceCents * it.qty,
     0,
   );
+
+  function handleCancel() {
+    if (!window.confirm("¿Vaciar el carrito y volver al catálogo?")) return;
+    clearStoredCart();
+    router.push(`/pedir/${token}`);
+  }
 
   function handleProofChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] ?? null;
@@ -157,7 +184,6 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
           apartment: values.apartment?.trim() || undefined,
           neighborhood: values.neighborhood?.trim() || undefined,
           references: values.references?.trim() || undefined,
-          zone: values.zone,
         },
         items: cartItems.map((it) => ({
           productId: it.productId,
@@ -258,10 +284,15 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
                   {formatCop(total)}
                 </span>
               </div>
-              <p className="text-xs text-muted-foreground italic">
-                Los precios con mitad y mitad toman el valor más alto de los
-                sabores.
-              </p>
+              {cartItems.some((it) => it.flavors.length >= 2) ? (
+                <div className="flex items-start gap-2 rounded-md border border-secondary/50 bg-secondary/15 px-3 py-2 text-sm text-foreground">
+                  <Info className="mt-0.5 size-4 shrink-0 text-secondary-foreground" />
+                  <p>
+                    Las pizzas con <strong>mitad y mitad</strong> se cobran al
+                    valor más alto de los sabores combinados.
+                  </p>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
 
@@ -278,7 +309,7 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
                   className="mt-1"
                 />
                 {formState.errors.customerName ? (
-                  <p className="mt-1 text-xs text-destructive">
+                  <p className="mt-1 text-sm text-destructive">
                     {formState.errors.customerName.message}
                   </p>
                 ) : null}
@@ -302,83 +333,97 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
                   className="mt-1"
                 />
                 {formState.errors.street ? (
-                  <p className="mt-1 text-xs text-destructive">
+                  <p className="mt-1 text-sm text-destructive">
                     {formState.errors.street.message}
                   </p>
                 ) : null}
               </div>
 
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                <div>
-                  <Label htmlFor="complex_name">Conjunto / edificio</Label>
-                  <Input
-                    id="complex_name"
-                    {...register("complex_name")}
-                    className="mt-1"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="tower">Torre</Label>
-                  <Input id="tower" {...register("tower")} className="mt-1" />
-                </div>
-                <div>
-                  <Label htmlFor="apartment">Apartamento / casa</Label>
-                  <Input
-                    id="apartment"
-                    {...register("apartment")}
-                    className="mt-1"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="neighborhood">Barrio</Label>
-                  <Input
-                    id="neighborhood"
-                    {...register("neighborhood")}
-                    className="mt-1"
-                  />
+              <div>
+                <Label>Tipo de vivienda</Label>
+                <div className="mt-1 grid grid-cols-3 gap-2">
+                  {HOUSING_OPTIONS.map((opt) => {
+                    const Icon = opt.icon;
+                    const active = housingType === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => handleHousingChange(opt.value)}
+                        className={cn(
+                          "flex min-h-12 flex-col items-center justify-center gap-1 rounded-md border border-border px-3 py-2 text-sm transition-colors",
+                          active
+                            ? "border-primary bg-accent text-foreground"
+                            : "text-muted-foreground hover:bg-accent/40",
+                        )}
+                      >
+                        <Icon className="size-4" />
+                        {opt.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
+              {housingType === "edificio" || housingType === "conjunto" ? (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className={cn(housingType === "conjunto" && "md:col-span-2")}>
+                    <Label htmlFor="complex_name">
+                      {housingType === "conjunto"
+                        ? "Nombre del conjunto"
+                        : "Nombre del edificio"}
+                    </Label>
+                    <Input
+                      id="complex_name"
+                      {...register("complex_name")}
+                      className="mt-1"
+                    />
+                  </div>
+                  {housingType === "conjunto" ? (
+                    <div>
+                      <Label htmlFor="tower">Torre #</Label>
+                      <Input
+                        id="tower"
+                        inputMode="numeric"
+                        {...register("tower")}
+                        className="mt-1"
+                      />
+                    </div>
+                  ) : null}
+                  <div>
+                    <Label htmlFor="apartment">Apto #</Label>
+                    <Input
+                      id="apartment"
+                      {...register("apartment")}
+                      className="mt-1"
+                    />
+                  </div>
+                </div>
+              ) : null}
+
               <div>
-                <Label htmlFor="references">Referencias / indicaciones</Label>
-                <Textarea
-                  id="references"
-                  rows={2}
-                  {...register("references")}
+                <Label htmlFor="neighborhood">Barrio</Label>
+                <Input
+                  id="neighborhood"
+                  {...register("neighborhood")}
                   className="mt-1"
                 />
               </div>
 
               <div>
-                <Label htmlFor="zone">Zona de entrega</Label>
-                <Controller
-                  control={control}
-                  name="zone"
-                  render={({ field }) => (
-                    <select
-                      id="zone"
-                      value={field.value}
-                      onChange={field.onChange}
-                      className="mt-1 h-11 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                    >
-                      {settings.delivery_zones.length === 0 ? (
-                        <option value="">Sin zonas configuradas</option>
-                      ) : (
-                        settings.delivery_zones.map((z) => (
-                          <option key={z.zone} value={z.zone}>
-                            {z.zone} (~{z.eta_min} min)
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  )}
+                <Label htmlFor="references">Referencias / indicaciones</Label>
+                <p className="mt-0.5 text-sm text-foreground/80">
+                  Pista para que el domiciliario te encuentre rápido
+                </p>
+                <Textarea
+                  id="references"
+                  rows={2}
+                  placeholder="Ej: portón verde, timbre dañado…"
+                  {...register("references")}
+                  className="mt-1"
                 />
-                {formState.errors.zone ? (
-                  <p className="mt-1 text-xs text-destructive">
-                    {formState.errors.zone.message}
-                  </p>
-                ) : null}
               </div>
+
             </CardContent>
           </Card>
 
@@ -458,11 +503,11 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
                       </p>
                     ) : null}
                     {proofError ? (
-                      <p className="mt-1 text-xs text-destructive">
+                      <p className="mt-1 text-sm text-destructive">
                         {proofError}
                       </p>
                     ) : null}
-                    <p className="mt-2 text-xs text-muted-foreground">
+                    <p className="mt-2 text-sm text-foreground/80">
                       Sube tu comprobante aquí o envíalo por WhatsApp.
                     </p>
                   </div>
@@ -502,7 +547,7 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
               />
               <Label
                 htmlFor="acceptedPolicies"
-                className="text-sm font-normal text-muted-foreground"
+                className="text-sm font-normal text-foreground"
               >
                 Acepto que una vez confirmado no puedo cambiar el pedido. La
                 lechera y los condimentos vienen incluidos. El domicilio ya
@@ -510,11 +555,22 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
               </Label>
             </CardContent>
             {formState.errors.acceptedPolicies ? (
-              <p className="px-6 pb-4 text-xs text-destructive">
+              <p className="px-6 pb-4 text-sm text-destructive">
                 {formState.errors.acceptedPolicies.message}
               </p>
             ) : null}
           </Card>
+
+          <Button
+            type="button"
+            variant="outline"
+            size="lg"
+            onClick={handleCancel}
+            className="h-12 w-full"
+          >
+            <X className="size-5" />
+            Cancelar pedido
+          </Button>
         </div>
 
         <div
@@ -532,6 +588,7 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
             </div>
             <Button
               type="submit"
+              variant="success"
               size="lg"
               className="h-12 flex-1 text-base"
               disabled={submitting}

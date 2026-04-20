@@ -171,6 +171,7 @@ export function DriverOrderCard({ order, viewerRole }: DriverOrderCardProps) {
         <div className="flex flex-col gap-2 sm:flex-row">
           {showSalgo ? (
             <Button
+              variant="success"
               size="lg"
               className="min-h-12 w-full text-base"
               disabled={pending}
@@ -186,8 +187,9 @@ export function DriverOrderCard({ order, viewerRole }: DriverOrderCardProps) {
           ) : null}
           {showEntregado ? (
             <Button
+              variant="success"
               size="lg"
-              className="min-h-12 w-full bg-emerald-600 text-base text-white hover:bg-emerald-700"
+              className="min-h-12 w-full text-base"
               disabled={pending}
               onClick={() => handleAdvance("delivered", "Pedido entregado")}
             >
