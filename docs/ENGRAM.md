@@ -39,6 +39,98 @@
 
 ## Decisiones tomadas (log en orden cronológico inverso)
 
+### 2026-04-20 — UI Agent ampliado a UI/UX Agent (alcance + heurísticas)
+**Qué:** [docs/agents/ui-agent.md](agents/ui-agent.md) renombrado a "UI/UX Agent". Scope ampliado para incluir explícitamente decisiones de UX (no solo implementación). Cuatro secciones nuevas al inicio:
+1. **Principios UX (Nielsen reducidas)**: visibilidad del estado, prevención de errores, reconocer > recordar, control del usuario, consistencia, minimizar carga cognitiva.
+2. **Jerarquía visual y semántica de color**: regla "una pantalla = un CTA principal", contraste de texto para avisos, glosario de variants de Button (success/destructive/outline/default/secondary), prohibición de colores hardcodeados.
+3. **Validar antes de implementar**: cuando una decisión afecta ≥3 archivos o cambia un patrón, primero "mockup en palabras" al usuario, después código. Evita ciclos de refactor.
+4. **Cuestionar fricción donde otros la normalizan**: con ejemplos del proyecto (4 inputs opcionales en grid, zona del cliente, color rojo para confirmar).
+
+Checklist final del agente actualizado con sección "UX" además de la "UI / técnico".
+
+NO se renombró el agente en otros docs ([CLAUDE.md](../CLAUDE.md), [AGENTS.md](AGENTS.md), [orchestrator.md](agents/orchestrator.md)) — siguen diciendo "UI Agent". Es el mismo agente con scope ampliado, evita refactor masivo de docs por una sola decisión.
+
+**Por qué:** el dueño señaló que el orquestador (Claude main) había hecho TODA la sesión sin delegar al UI Agent — varios cambios de UX significativos (sistema de variant `success`, refactor de housing types, tokens de color) se ejecutaron directo en lugar de pasar por el agente. La causa raíz: (a) el orquestador no respetó el workflow del proyecto, y (b) el agente no tenía competencias UX explícitas, así que delegarle decisiones UX se sentía incompleto. Esta entrada cierra el (b).
+
+**Cómo aplica, decisiones no triviales:**
+- **NO se creó un UX Agent separado.** Razón: UI y UX están entrelazados (decidir "verde para confirmar" requiere implementar token + variant + aplicar en N archivos en el mismo loop). Separar crearía handoffs artificiales. Para un proyecto de 1 dev + MVP single-tenant, el overhead supera el beneficio. YAGNI explícito. Cuando aparezca equipo de UX research / multi-superficie / +5 productos → reconsiderar.
+- **El "mockup en palabras" formaliza un patrón que el dueño usó hoy de forma intuitiva** ("siento que esos colores no cuadran con confirmar"). El agente debe ofrecerlo proactivamente para decisiones grandes en lugar de tirarse a codear.
+- **Lección para Claude main (orquestador)**: cambios de UI/UX que toquen ≥3 archivos o introduzcan patrones nuevos del design system DEBEN delegarse al UI/UX Agent vía Task tool. Cambios de 1-3 líneas (placeholder, ajuste de className, rename de copy) los hace el orquestador. Si dudo → delego.
+
+### 2026-04-20 — Token semántico `--success` verde para CTAs de avance (complementa la marca)
+**Qué:**
+- [app/globals.css](../app/globals.css): nuevos tokens `--success: oklch(0.6 0.14 152)` (light) / `oklch(0.65 0.15 152)` (dark) + `--success-foreground: oklch(1 0 0)` y mapeo `--color-success` en `@theme inline`.
+- [src/components/ui/button.tsx](../src/components/ui/button.tsx): nueva variante `success: "bg-success text-success-foreground hover:bg-success/90 focus-visible:ring-success/30"` en `cva`.
+- Aplicada `variant="success"` a 7 botones de "avance positivo" en el flujo:
+  - **Cliente**: [cart-sheet.tsx](../src/components/shop/cart-sheet.tsx) "Ir al pago", [checkout-form.tsx](../src/components/shop/checkout-form.tsx) "Confirmar pedido".
+  - **Panel staff**: [status-actions.ts](../src/components/dashboard/order-detail/status-actions.ts) `APPROVE_PAYMENT`, `TO_PREPARING`, `TO_READY`, `TO_ON_THE_WAY`, `TO_DELIVERED`.
+  - **Mensajero**: [driver-order-card.tsx](../src/components/dashboard/driver-order-card.tsx) "Salgo" + "Entregado" (este último ya tenía hardcode `bg-emerald-600` que se eliminó — la deuda técnica que ENGRAM 2026-04-16 había documentado como "excepción a tokens" queda cerrada).
+
+**Por qué:** feedback del dueño revisando el checkout: *"esos colores rojos no cuadran con la acción confirmar; siempre es como un verde o algo que invite a confirmar"*. Tiene razón en el principio universal de UX: rojo en CTAs de "avanzar" se lee como "peligro/cuidado", no como "adelante". El proyecto mezclaba **identidad de marca** (terracota = pizzería cálida) con **semántica de acción** (confirmar / cancelar). Solución de design system maduro: separar.
+
+**Cómo aplica, decisiones no triviales:**
+- **NO se cambió el `--primary` terracota** — sigue siendo la identidad: header brand, focus rings, badges, links, botones primarios "no-confirmar" (login, filtros). ENGRAM 2026-04-16 (terracota+mostaza) intacto.
+- **El `--success` se usa ESTRICTAMENTE para "avance positivo del flujo"**: pasar al siguiente paso del checkout, aprobar pago, mover el pedido al siguiente estado, marcar entregado. **NO** para acciones neutrales (login, abrir modal) ni para indicadores pasivos (status badges del pedido — esos siguen siendo el StatusBadge específico).
+- **Verde elegido (`oklch(0.6 0.14 152)`)** es el equivalente al `emerald-600` de Tailwind que ya estaba hardcodeado en `driver-order-card`. Mantiene consistencia con lo que ya se había probado y aprobado visualmente.
+- **Patrones que valen la pena recordar:**
+  - "Confirmar / Avanzar / Aprobar" → `variant="success"`
+  - "Cancelar / Rechazar / Eliminar" → `variant="destructive"`
+  - "Volver / Vaciar / Reset" (reversible neutral) → `variant="outline"` SIN clases destructivas
+  - Resto de CTAs (login, navegar, abrir modal) → `variant="default"` (terracota = identidad)
+- **No se introdujo `--warning` / `--info`**: YAGNI. Si aparece la necesidad, se agregan con la misma lógica.
+
+### 2026-04-20 — Quitar selector de zona del checkout (UX cliente)
+**Qué:** [src/components/shop/checkout-form.tsx](../src/components/shop/checkout-form.tsx) ya no muestra el selector "Zona de entrega" al cliente. Removido del `checkoutFormSchema`, de los `defaultValues`, del payload de `createOrder`, y del JSX (~30 líneas eliminadas). El cliente arma el pedido sin elegir zona; el backend usa el fallback de [src/features/orders/eta.ts](../src/features/orders/eta.ts) `computeEtaAt(null, zones)` que cae en la primera zona configurada (~30min default si no hay ninguna). El staff ve el ETA inicial en el panel; F8 sigue funcionando con ese ETA.
+
+**Por qué:** el cliente no entiende para qué sirve y se autoclasifica mal (puede mentir para bajar el ETA, o no saber a qué zona pertenece su barrio). Es trabajo del restaurante saber eso, no del cliente. Discusión con el dueño concluyó que el campo era ruido UX.
+
+**Cómo aplica:**
+- **El cliente NO ve ETA en el checkout.** Página `/gracias` ya muestra "Te avisamos por WhatsApp cuando esté en camino" para `preparing` — eso cubre la expectativa.
+- **`zone` ya era opcional en [src/features/orders/schemas.ts:25](../src/features/orders/schemas.ts)** — sin migración ni cambio de actions.
+- **Trade-off conocido:** el ETA inicial de TODOS los pedidos es el de la primera zona configurada en `settings.delivery_zones`, sin importar dónde viva el cliente. Si el restaurante tiene zonas con ETAs muy distintos (ej. 25min vs 60min), todos arrancan con 25min y los lejanos siempre disparan F8 antes de tiempo.
+- **TODO futuro (opción 1 propuesta y descartada por YAGNI hoy):** mapeo barrio→zona en `settings.delivery_zones`. Estructura propuesta: agregar `barrios?: string[]` al `DeliveryZone`, helper puro `findZoneForBarrio`, y mostrar `Tiempo estimado: ~X min` (solo lectura) debajo del campo barrio en el checkout. Se construye cuando aparezca el primer cliente real y dé su mapa de barrios. Sin esa lista, el helper siempre cae en default y el código sería ruido.
+
+### 2026-04-20 — UX checkout: rediseño completo guiado por "menos teclado, más claridad"
+**Qué:** [src/components/shop/checkout-form.tsx](../src/components/shop/checkout-form.tsx) tuvo 6 cambios UX en una sola sesión, todos guiados por el principio del usuario *"que el cliente escriba lo menos posible"*:
+
+1. **Selector de tipo de vivienda** (3 chips: 🏠 Casa / 🏢 Edificio / 🏘️ Conjunto) con default `casa`. Reemplaza los 4 inputs opcionales (Conjunto, Torre, Apto, Barrio en grid 2x2) que confundían al cliente.
+2. **Render condicional** según el tipo: Casa muestra solo Barrio; Edificio muestra Nombre del edificio + Apto #; Conjunto muestra Nombre del conjunto (full width) + Torre # + Apto #. `handleHousingChange` limpia los campos que se ocultan (no se mandan valores stale al backend).
+3. **Torre con `inputMode="numeric"`** para abrir teclado numérico en móvil.
+4. **Campo de referencias con feedback explícito**: label + sub-texto *"Pista para que el domiciliario te encuentre rápido"* + placeholder *"Ej: portón verde, timbre dañado…"*. Antes era un textarea pelado sin guía.
+5. **Tipografía de avisos legible**: 5 textos pequeños subidos de `text-xs text-muted-foreground` a `text-sm text-foreground/80` (helper de referencias, errores de validación, nota de mitad-y-mitad, ayuda de comprobante, aceptación de políticas). Razón: el cliente se quejaba de que no veía las letras chicas.
+6. **Nota de mitad-y-mitad condicional + visible**: la frase *"Las pizzas con mitad y mitad se cobran al valor más alto…"* aparece SOLO si `cartItems.some(it => it.flavors.length >= 2)`. Estilo: caja con `bg-secondary/15` + `border-secondary/50` + icono `Info`. Antes: texto siempre visible incluso para clientes que pidieron una sola pizza sin combinar.
+7. **Botón "Cancelar pedido"** outline rojo (`border-destructive/50 text-destructive`) con icono `X` debajo del card de políticas. `handleCancel` confirma con `window.confirm` + `clearStoredCart()` + `router.push('/pedir/${token}')`. Antes el cliente no tenía forma explícita de abandonar el flujo.
+
+**Por qué:** sesión de feedback con el dueño revisando el flujo del cliente. Cada decisión vino de una crítica concreta de UX: *"el usuario no entiende qué poner aquí"*, *"no ve las letras pequeñas"*, *"y si quiere cancelar, qué"*, *"esa nota no aplica a todos"*.
+
+**Cómo aplica, decisiones no triviales:**
+- **Schema atrás INTACTO**: `complex_name`, `tower`, `apartment` siguen siendo columnas separadas en `addresses`. El `housingType` es solo del form, NO se persiste — `complex_name` recibe el nombre de conjunto o edificio según el caso. Respeta ENGRAM 2026-04-16 (estructura jerárquica de direcciones colombianas) sin romper schema.
+- **Default `casa` es hipótesis no validada**: si la mayoría de los pedidos del restaurante van a apartamentos, hay 1 toque extra para esos. Validar con los primeros 50 pedidos reales y ajustar si hace falta.
+- **Botón cancelar rojo outline (no sólido)**: NO compete con el botón principal "Confirmar pedido" (sólido primario). Ambos son full-width y `h-12`, claramente acciones paralelas pero con jerarquía visual distinta. La iteración anterior (link gris subtle) fue rechazada por invisible.
+- **Caja mostaza para mitad-y-mitad** usa color de marca (`secondary`), consistente con el sistema, no introduce ámbar/amarillo nuevo.
+- **`HOUSING_OPTIONS` es array constante en módulo** (no estado), no re-renderiza nada.
+- **Cambios de tipografía no afectan**: detalles secundarios del item del carrito (`Tamaño: Familiar`, sabores), nombre del archivo subido, label "Total" del bottom bar — siguen `text-xs` por jerarquía visual deliberada.
+
+### 2026-04-20 — Realtime panel: setAuth + publication (fix bug)
+**Qué:** [src/components/dashboard/orders-board.tsx](../src/components/dashboard/orders-board.tsx) ahora hace `await supabase.realtime.setAuth(session.access_token)` antes de `.subscribe()`. Además se documenta el setup de Supabase Realtime publication como paso obligatorio (no recovery).
+
+**Por qué:** bug reportado por el dueño: el panel `/pedidos` no se actualizaba al llegar pedidos nuevos, había que recargar manualmente. Tras diagnosticar:
+1. La tabla `orders` no estaba en la publication `supabase_realtime` (esperado: `bunx supabase db push` no la agrega — es setup manual de Supabase, no migration).
+2. Aún con la publication arreglada, el canal recibía `SUBSCRIBED` pero ningún evento llegaba. Causa: `@supabase/ssr` `createBrowserClient` resuelve la sesión vía cookies para queries, pero **no sincroniza automáticamente el JWT con el cliente Realtime**. Sin JWT, Realtime aplica RLS contra rol `anon`, y la policy `orders_staff_select for select to authenticated using is_staff()` filtra todos los eventos silenciosamente.
+
+**Cómo aplica, decisiones no triviales:**
+- **Patrón correcto en cualquier futura suscripción Realtime con RLS**: dentro del `useEffect`, primero `getSession()`, luego `realtime.setAuth(token)`, después `subscribe`. Aplica también a [driver-orders-list.tsx](../src/components/dashboard/driver-orders-list.tsx) (mismo patrón) — no se ha visto fallar porque se prueba menos, pero conviene aplicar el mismo fix preventivamente la próxima vez que se toque.
+- **No usar `onAuthStateChange` para resuscribir**: el caso real es que la sesión ya existe al montar (el user está logueado, sino no entraría al panel). Manejar refresh-token es complicación innecesaria.
+- **IIFE async dentro del `useEffect`**: `useEffect` no acepta async directo. La IIFE lleva flag `cancelled` para no setear el canal si el componente desmonta antes del `await`.
+- **SQL setup obligatorio (no en migrations, es manual en Studio)**:
+  ```sql
+  alter publication supabase_realtime add table orders;
+  alter publication supabase_realtime add table order_items;
+  alter publication supabase_realtime add table order_status_events;
+  ```
+  Verificar con `select * from pg_publication_tables where pubname = 'supabase_realtime';` (debe devolver 3 filas).
+- **Comentario en código** explica el por qué del `setAuth` — lo dejé porque sin él un dev futuro lo borraría como "código muerto" y el bug volvería silenciosamente.
+
 ### 2026-04-18 — Validar pago aprobado antes de asignar driver (fix bug)
 **Qué:** [src/features/orders/actions.ts](../src/features/orders/actions.ts) `assignDriver()` agregó 3 validaciones que faltaban:
 1. **Estado del pedido permitido**: rechaza asignación si status ∉ `["payment_approved", "preparing", "ready", "on_the_way"]`. Previene asignar domiciliario mientras está en `awaiting_payment`.

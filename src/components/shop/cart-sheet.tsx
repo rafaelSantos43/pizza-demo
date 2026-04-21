@@ -42,6 +42,11 @@ export function CartSheet({
     router.push(`/pedir/${token}/checkout`);
   }
 
+  function handleClear() {
+    if (!window.confirm("¿Vaciar el carrito? Perderás todo lo que agregaste.")) return;
+    onClear();
+  }
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -118,19 +123,23 @@ export function CartSheet({
               </div>
               <Button
                 type="button"
+                variant="success"
                 size="lg"
                 className="h-12 w-full text-base"
                 onClick={handleCheckout}
               >
                 Ir al pago
               </Button>
-              <button
+              <Button
                 type="button"
-                onClick={onClear}
-                className="mt-3 w-full text-center text-xs text-muted-foreground underline-offset-4 hover:underline"
+                variant="outline"
+                size="lg"
+                onClick={handleClear}
+                className="mt-3 h-12 w-full"
               >
+                <Trash2 className="size-5" />
                 Vaciar carrito
-              </button>
+              </Button>
             </div>
           </>
         )}

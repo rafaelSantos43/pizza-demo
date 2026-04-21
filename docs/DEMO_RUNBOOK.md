@@ -321,11 +321,22 @@ on conflict (id) do update
 set role = excluded.role, display_name = excluded.display_name, active = excluded.active;
 ```
 
-**Activar Realtime en tablas (solo una vez):**
+**Activar Realtime en tablas (OBLIGATORIO una vez por proyecto Supabase):**
+
+Sin esto el panel `/pedidos` no se actualiza solo, hay que recargar. Las migrations NO lo configuran — es manual en Studio:
+
 ```sql
 alter publication supabase_realtime add table orders;
 alter publication supabase_realtime add table order_items;
 alter publication supabase_realtime add table order_status_events;
+```
+
+Verifica que quedaron las 3 filas:
+
+```sql
+select schemaname, tablename
+from pg_publication_tables
+where pubname = 'supabase_realtime';
 ```
 
 **Actualizar zonas de entrega y cuentas de pago:**
