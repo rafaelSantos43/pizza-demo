@@ -236,7 +236,7 @@ where id = '00000000-0000-0000-0000-000000000001'::uuid;
 | `/pedidos` siempre redirige a `/login` | Sesión expiró / magic link consumido | Regenerar login link con el script |
 | Error `Body exceeded 1 MB` al subir comprobante | (Resuelto) `next.config.ts` tiene `bodySizeLimit: '6mb'` + compresión client-side | Si reaparece, subir el límite más |
 | Error `A "use server" file can only export async functions` | Hay un re-export de constante en archivo con `'use server'` | Borrar el re-export, importar direct desde `./schemas` |
-| `/pedir/foo` muestra "enlace inválido" | Token malformado o expirado | Generar nuevo con `gen-order-link.ts` (válido 30 min) |
+| `/pedir/foo` muestra "enlace inválido" | Token malformado o expirado | Generar nuevo con `gen-order-link.ts` (válido 2 horas) |
 | Magic link de email no llega | Rate limit 3/hora del SMTP default | Usar `gen-login-link.ts` (admin API, sin rate limit) |
 | Panel no se actualiza en vivo | Publication de Supabase Realtime no incluye la tabla | Supabase Dashboard → Database → Publications → `supabase_realtime` → activar `orders` |
 

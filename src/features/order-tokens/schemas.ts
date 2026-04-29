@@ -26,3 +26,24 @@ export const verifyResultSchema = z.discriminatedUnion("ok", [
 ]);
 
 export type VerifyResult = z.infer<typeof verifyResultSchema>;
+
+export const resolveExpiredTokenResultSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    customerId: z.uuid(),
+    reason: z.enum(["expired", "used"]),
+  }),
+  z.object({
+    ok: z.literal(false),
+    reason: z.enum([
+      "malformed",
+      "invalid_signature",
+      "not_found",
+      "still_valid",
+    ]),
+  }),
+]);
+
+export type ResolveExpiredTokenResult = z.infer<
+  typeof resolveExpiredTokenResultSchema
+>;

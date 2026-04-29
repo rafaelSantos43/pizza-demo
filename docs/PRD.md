@@ -89,7 +89,7 @@ Solo 7 funcionalidades. Cada una responde a un dolor concreto.
 ### F1 — Saludo por WhatsApp + link al catálogo
 Cliente escribe cualquier cosa al WhatsApp del restaurante. El bot:
 1. Busca el teléfono en la DB
-2. Genera un link firmado (HMAC, expira 30 min, un solo uso)
+2. Genera un link firmado (HMAC, expira 2 horas, un solo uso)
 3. Responde con plantilla aprobada:
 
 > *"¡Hola [nombre]! 🍕 Aquí está nuestro menú: https://.../pedir/<token>. El link es solo para ti."*
@@ -350,7 +350,7 @@ Decisión a validar la **primera semana** viendo qué ticketera tiene el restaur
  1. Cliente → "hola" al WhatsApp
  2. Webhook:
     - busca/crea customer por teléfono
-    - genera token firmado (30 min, one-time)
+    - genera token firmado (2 horas, one-time)
     - responde con link al catálogo
  3. Cliente abre /pedir/[token] en el móvil
     - servidor valida token, resuelve customer
@@ -625,7 +625,7 @@ Todo el diseño **100% con Tailwind v4**. Sin CSS-in-JS.
 |------|------|
 | Staff login | Supabase Auth magic link |
 | Cliente identidad | Teléfono (E.164), sin password |
-| Link del catálogo | Token HMAC firmado, expira 30 min, one-time |
+| Link del catálogo | Token HMAC firmado, expira 2 horas, one-time |
 | Webhook WhatsApp | Validación `X-Hub-Signature-256` |
 | Autorización DB | RLS: solo staff autenticado ve `orders`, `customers`, etc. |
 | Comprobantes de pago | Supabase Storage bucket privado `payment-proofs`, acceso solo staff (policy RLS) |

@@ -81,7 +81,7 @@ const sigPart = toBase64Url(hmac);
 const token = `${payload}.${sigPart}`;
 
 const tokenHash = createHash("sha256").update(token).digest("hex");
-const expiresAt = new Date(iat + 30 * 60_000).toISOString();
+const expiresAt = new Date(iat + 120 * 60_000).toISOString();
 
 // 3. Insertar en order_tokens.
 const { error: insTokErr } = await admin.from("order_tokens").insert({
@@ -94,6 +94,6 @@ if (insTokErr) {
   process.exit(1);
 }
 
-console.log("\n✓ Link de pedido (pégalo en tu celular, válido 30 min):\n");
+console.log("\n✓ Link de pedido (pégalo en tu celular, válido 2 horas):\n");
 console.log(`${appUrl}/pedir/${token}`);
 console.log("");

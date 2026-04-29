@@ -6,7 +6,7 @@ import { isDemoMode } from "@/lib/demo";
 import { getServerEnv } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
-import type { VerifyResult } from "./schemas";
+import type { ResolveExpiredTokenResult, VerifyResult } from "./schemas";
 
 function base64urlToBuffer(input: string): Buffer {
   const pad = input.length % 4 === 0 ? "" : "=".repeat(4 - (input.length % 4));
@@ -74,4 +74,70 @@ export async function verifyToken(token: string): Promise<VerifyResult> {
   if (row.used_at) return { ok: false, reason: "used" };
 
   return { ok: true, customerId: row.customer_id, tokenId: row.id };
+}
+
+// Recupera el customer_id de un token EXPIRADO o USADO. Mantiene la
+// verificación HMAC para no aceptar tokens inventados. Se usa para el
+// flujo de "pedir nuevo link" desde la página de link expirado.
+export async function getCustomerIdFromExpiredToken(
+  token: string,
+): Promise<ResolveExpiredTokenResult> {
+  if (isDemoMode()) {
+    if (token === "demo") {
+      return {
+        ok: true,
+        customerId: "00000000-0000-4000-8000-00000000c001",
+        reason: "expired",
+      };
+    }
+    return { ok: false, reason: "malformed" };
+  }
+
+  const parts = token.split(".");
+  if (parts.length !== 3) return { ok: false, reason: "malformed" };
+
+  const [id, iatPart, sigPart] = parts;
+  if (!id || !iatPart || !sigPart) return { ok: false, reason: "malformed" };
+
+  const payload = `${id}.${iatPart}`;
+  const expected = createHmac("sha256", getServerEnv().ORDER_TOKEN_SECRET)
+    .update(payload)
+    .digest();
+  const provided = base64urlToBuffer(sigPart);
+
+  if (
+    expected.length !== provided.length ||
+    !timingSafeEqual(expected, provided)
+  ) {
+    return { ok: false, reason: "invalid_signature" };
+  }
+
+  const tokenHash = sha256Hex(token);
+  const { data, error } = await supabaseAdmin
+    .from("order_tokens")
+    .select("customer_id, expires_at, used_at")
+    .eq("token_hash", tokenHash)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return { ok: false, reason: "not_found" };
+
+  const row = data as {
+    customer_id: string;
+    expires_at: string;
+    used_at: string | null;
+  };
+
+  const isExpired = new Date(row.expires_at).getTime() < Date.now();
+  const isUsed = row.used_at !== null;
+
+  if (!isExpired && !isUsed) {
+    return { ok: false, reason: "still_valid" };
+  }
+
+  return {
+    ok: true,
+    customerId: row.customer_id,
+    reason: isExpired ? "expired" : "used",
+  };
 }

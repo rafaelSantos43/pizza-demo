@@ -39,6 +39,20 @@
 
 ## Decisiones tomadas (log en orden cronológico inverso)
 
+### 2026-04-29 — Re-greet manual desde página de link expirado/usado
+**Qué:** cuando un cliente abre `/pedir/[token]` y el token está `expired` o `used`, se renderiza [src/components/shop/expired-token-notice.tsx](../src/components/shop/expired-token-notice.tsx) (Client) con un botón "Pedir nuevo link por WhatsApp". El botón llama el Server Action [src/features/order-tokens/request-relink.ts](../src/features/order-tokens/request-relink.ts) → resuelve `customer_id` con `getCustomerIdFromExpiredToken` (helper nuevo en [verify.ts](../src/features/order-tokens/verify.ts), mantiene HMAC) → aplica rate limit **3 re-greets / customer / hora** contando filas de `order_tokens` con `created_at > now()-1h` → llama `relinkCustomerTwilio(customerId)` (wrapper nuevo en [whatsapp-twilio/greet.ts](../src/features/whatsapp-twilio/greet.ts)). UI maneja states `idle | sent | rate_limited | error`. Página `page.tsx` solo deriva al componente para `expired`/`used`; tokens `malformed`/`invalid_signature`/`not_found` siguen mostrando texto plano (no se les ofrece relink — son tokens inventados o corruptos).
+**Por qué:** subir el TTL a 2h reduce fricción pero no la elimina. El cliente que vuelve después del límite tendría que escribir manualmente al WhatsApp para pedir otro link. Un botón explícito cierra el bucle desde la misma URL. Opción A (botón) elegida sobre B (auto-disparo al cargar) para evitar mandar mensajes no solicitados a clientes que abrieron el link por curiosidad o lo encontraron en un screenshot viejo. Rate limit 3/h cubre cliente legítimo que se equivoca 1-2 veces sin abrir spam infinito; recordar que el límite por customer NO defiende contra ataque distribuido (ese problema es para un rate limit por IP, no MVP).
+**Cómo aplica:**
+- Sender activo es Twilio (provisional). Cuando vuelva Meta, cambiar el import en `request-relink.ts` por el equivalente en `src/features/whatsapp/greet.ts` (un solo cambio).
+- Rate limit reusa `order_tokens` (no tabla nueva). Demo mode salta el rate limit y solo simula el envío.
+- Helper `getCustomerIdFromExpiredToken` mantiene la verificación HMAC: tokens con firma inválida nunca llegan al sender.
+- Schema `ResolveExpiredTokenResult` agrega `reason: "still_valid"` para el caso raro en que el helper se invoque con un token todavía vigente — devuelve error en lugar de hacer un relink innecesario.
+
+### 2026-04-29 — Token del catálogo: TTL 30 min → 2 horas
+**Qué:** [src/features/order-tokens/sign.ts](../src/features/order-tokens/sign.ts) `ttlMinutes` default cambia de `30` a `120`. Copy actualizada en [src/features/whatsapp-twilio/greet.ts](../src/features/whatsapp-twilio/greet.ts) ("expira en 2 horas") y referencias en PRD §F1, §9.2, §12 + DEMO_RUNBOOK + README de twilio. La entrada original "Cliente final NO inicia sesión" queda con nota cruzada al nuevo TTL.
+**Por qué:** 30 min era flojo. La seguridad del token ya descansa en HMAC + one-time use (`used_at` se marca en `createOrder`); el TTL solo cubre el ratón "cliente recibe link → se distrae → vuelve". 30 min castigaba el caso normal sin agregar seguridad real (los vectores reales —forward involuntario, fraude vía pago efectivo— son independientes del TTL). 2h cubre el patrón observado de uso sin abrir ventana de phishing infinita. "Sin caducidad" se descartó: complica limpieza de `order_tokens` y deja screenshots vivos para siempre.
+**Cómo aplica:** cualquier llamada a `signToken(customerId)` ahora emite tokens de 2h. Métrica a vigilar en piloto: `% tokens expirados antes de uso` — si sigue alto, subir a 4h. Pendiente complementario: re-greet automático cuando un cliente abre un link expirado (decisión de UX en curso, sin implementar aún).
+
 ### 2026-04-20 — UI Agent ampliado a UI/UX Agent (alcance + heurísticas)
 **Qué:** [docs/agents/ui-agent.md](agents/ui-agent.md) renombrado a "UI/UX Agent". Scope ampliado para incluir explícitamente decisiones de UX (no solo implementación). Cuatro secciones nuevas al inicio:
 1. **Principios UX (Nielsen reducidas)**: visibilidad del estado, prevención de errores, reconocer > recordar, control del usuario, consistencia, minimizar carga cognitiva.
@@ -373,7 +387,7 @@ NO se renombró el agente en otros docs ([CLAUDE.md](../CLAUDE.md), [AGENTS.md](
 **Cómo aplica:** se migra a pasarela cuando haya 15+ clientes.
 
 ### 2026-04-16 — Cliente final NO inicia sesión
-**Qué:** el cliente nunca se autentica. Se identifica por `phone` (E.164) como clave natural. El acceso al catálogo es por token firmado (HMAC, 30 min, one-time).
+**Qué:** el cliente nunca se autentica. Se identifica por `phone` (E.164) como clave natural. El acceso al catálogo es por token firmado (HMAC, 2 horas, one-time). _TTL ampliado de 30 min → 2h el 2026-04-29; ver entrada al inicio del log._
 **Por qué:** fricción cero, alineado con cómo ya compran (sin crear cuenta).
 **Cómo aplica:** tabla `order_tokens` gestiona los links; solo el staff tiene `auth.users`.
 

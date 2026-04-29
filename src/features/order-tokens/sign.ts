@@ -20,7 +20,7 @@ function sha256Hex(input: string): string {
 
 export async function signToken(
   customerId: string,
-  ttlMinutes = 30,
+  ttlMinutes = 120,
 ): Promise<{ token: string; expiresAt: Date }> {
   const id = randomUUID();
   const iat = Date.now();
