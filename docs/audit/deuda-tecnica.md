@@ -98,7 +98,7 @@ y `bunx playwright install` antes de escribir el primer spec.
 ## D04 · Sin tests para Server Actions
 
 - **Severidad:** medium
-- **Estado:** **fixed (parcial)** · 2026-04-30 — `transitionOrder` cubierto con 12 tests; `createOrder` queda en D04-A
+- **Estado:** **fixed** · 2026-04-30 — `transitionOrder` (12 tests) + `createOrder` (6 tests) cubiertos. `assignDriver` y catalog actions diferidos a D04-B
 - **Ubicación:** [src/features/orders/actions.ts](../../src/features/orders/actions.ts), [src/features/catalog/actions.ts](../../src/features/catalog/actions.ts)
 
 ### Análisis
@@ -169,6 +169,64 @@ pero el código early-retorna sin consumirlo, el valor queda en el
 queue y se filtra al siguiente test. **Usar `vi.resetAllMocks()`** en
 beforeEach (que sí limpia queue + implementations) y re-establecer
 implementations por test.
+
+### Decisión de implementación D04-A · 2026-04-30
+
+**Atacando:** `createOrder` no tiene cobertura de tests. Recientemente
+movimos `markTokenUsed` al inicio (L01) y agregamos
+`payment_proof_source` (mejora 2). Si alguien refactora la cascada,
+cualquier regresión silenciosa pasa hasta producción.
+
+**Por qué AHORA:** L01 y mejora 2 viven en código fresco, justo antes
+del piloto. La red de seguridad paga apenas haya un refactor.
+
+**Compatibilidad RULES:**
+- §1, §2, §3, §4, §5: ✅ test code, no toca dominio.
+- §6: ✅ honra parcialmente "tests" en pre-delivery checklist.
+
+**Alcance acotado a 6 tests críticos** (no exhaustivo):
+1. Happy path cash → `status='preparing'`, `payment_proof_source=null`,
+   `needs_proof=false`.
+2. Happy path transferencia + proof → `status='awaiting_payment'`,
+   `payment_proof_source='web'`, `needs_proof=false`.
+3. Happy path transferencia sin proof → `status='awaiting_payment'`,
+   `needs_proof=true`, `payment_proof_source=null`.
+4. `markTokenUsed` falla → error + NO se ejecuta la cascada (verifica
+   el comportamiento de L01).
+5. `verifyToken` falla → error con el mensaje del `TOKEN_REASON_MESSAGES`
+   correspondiente, NO se llama `markTokenUsed` ni nada después.
+6. Datos inválidos Zod → `"Datos inválidos"` + NO se llama nada.
+
+**Alternativas descartadas:**
+1. **Cobertura completa de todos los caminos.** Descartada — alcance
+   crece a >2h. Los 6 tests cubren el 80% del valor de regresión.
+2. **Tests integración contra Supabase real.** Descartada (mismo
+   argumento que D04 base).
+
+**Caveat de implementación:** la cascada de `createOrder` toca 8 tablas
+con chains distintas. El mock de `supabaseAdmin` es más complejo que
+el de `transitionOrder`. Estimación realista: ~1.5-2h con setup +
+escritura.
+
+**Cómo se valida:**
+- `bunx vitest run` muestra 49+6 = 55 tests pasando.
+- Todos los tests del happy path verifican el `INSERT orders` con el
+  payload completo (incluyendo `customer_name`, `payment_proof_source`).
+
+### D04-A resuelta · 2026-04-30
+6 tests creados en
+[src/features/orders/__tests__/create-order.test.ts](../../src/features/orders/__tests__/create-order.test.ts):
+- 3 happy paths (cash, transferencia con/sin proof) verifican el shape
+  exacto del INSERT en `orders` incluyendo `customer_name`,
+  `payment_proof_source` y status correcto.
+- 3 guardas tempranas: `markTokenUsed` falla → cascade NO se ejecuta
+  (regresión-test de L01); token expirado → mensaje específico sin
+  tocar DB; input Zod inválido → "Datos inválidos" sin tocar nada.
+- 55/55 tests verdes.
+
+**Deuda residual D04-B:** tests para `assignDriver` y `catalog/actions.ts`.
+Trigger: próximo refactor de cualquiera de los dos. Probablemente nunca
+porque son superficie chica y estable.
 
 ---
 
