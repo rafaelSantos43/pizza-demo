@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertTriangle, Clock, FileWarning } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { StatusBadge } from "@/components/dashboard/status-badge";
 import { Card } from "@/components/ui/card";
@@ -96,13 +97,21 @@ export function OrderCard({ order, onSelect }: OrderCardProps) {
 //              recordatorio automático que dispara pg_cron a los 5 min
 //   30+ min  → rojo     "Sin comprobante hace N min" — señal al cajero de
 //              evaluar si abandona el pedido (no auto-cancel)
-// El reloj se evalúa al render. Realtime fuerza re-render cuando hay
-// cambios en orders; pedidos abandonados sin cambios pueden quedar con
-// minutos stale hasta el siguiente evento, riesgo aceptado para el MVP.
+// U01: el reloj se actualiza con `setInterval` cada 60 segundos para
+// que pedidos sin cambios de estado (que NO disparan eventos Realtime)
+// igual avancen visualmente del amarillo al naranja al rojo. El interval
+// vive dentro del badge para que solo los pedidos en awaiting_payment +
+// needs_proof re-renderen, no todo el panel.
 function ProofWaitingBadge({ createdAt }: { createdAt: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const ageMin = Math.max(
     0,
-    Math.floor((Date.now() - new Date(createdAt).getTime()) / 60_000),
+    Math.floor((now - new Date(createdAt).getTime()) / 60_000),
   );
 
   if (ageMin >= 30) {

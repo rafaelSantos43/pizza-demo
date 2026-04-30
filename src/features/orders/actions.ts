@@ -194,14 +194,20 @@ export async function createOrder(
     for (const item of data.items) {
       const rule = ruleMap.get(item.productId);
       if (!rule) {
-        return { ok: false, error: "Producto o tamaño no disponible" };
+        // U04: el cliente no sabe QUÉ producto. Pedirle volver al catálogo
+        // es la acción accionable; ahí va a ver qué cambió.
+        return {
+          ok: false,
+          error:
+            "Uno de los productos de tu carrito ya no está disponible. Vuelve al catálogo y arma tu pedido de nuevo.",
+        };
       }
 
       const flavors = item.flavors ?? [];
       if (flavors.length > rule.max_flavors) {
         return {
           ok: false,
-          error: `Este producto admite máximo ${rule.max_flavors} sabores.`,
+          error: `Una de tus pizzas tiene más sabores de los permitidos (máximo ${rule.max_flavors}). Edítala desde el carrito.`,
         };
       }
       if (flavors.length > 1) {
@@ -211,7 +217,8 @@ export async function createOrder(
         ) {
           return {
             ok: false,
-            error: "Mitad y mitad no está disponible en ese tamaño.",
+            error:
+              "Mitad y mitad solo está disponible desde tamaño Pequeña en adelante. Cambia el tamaño o quita un sabor.",
           };
         }
       }
@@ -227,8 +234,8 @@ export async function createOrder(
           ok: false,
           error:
             priced.reason === "flavor_missing"
-              ? "Sabor no disponible en este tamaño"
-              : "Producto o tamaño no disponible",
+              ? "Uno de los sabores que elegiste no está disponible en ese tamaño. Edita la pizza desde el carrito."
+              : "Uno de los productos de tu carrito ya no está disponible. Vuelve al catálogo y arma tu pedido de nuevo.",
         };
       }
 

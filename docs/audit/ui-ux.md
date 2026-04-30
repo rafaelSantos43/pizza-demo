@@ -9,7 +9,7 @@ Fricción del usuario, estados invisibles, copy ambiguo, comportamientos inesper
 ## U01 · Badge de "Esperando comprobante (N min)" no se actualiza solo
 
 - **Severidad:** medium
-- **Estado:** open (mitigación documentada en ENGRAM)
+- **Estado:** in progress · 2026-04-30
 - **Ubicación:** [src/components/dashboard/order-card.tsx:91-130](../../src/components/dashboard/order-card.tsx#L91)
 
 ### Síntoma observable
@@ -21,12 +21,30 @@ Decisión consciente: no agregamos `setInterval` para no re-renderear todos los 
 ### Fix propuesto
 Un único `setInterval(() => forceRender(), 60_000)` a nivel del padre `OrdersBoard`. Re-renderea todos los cards cada minuto, costo despreciable con <50 cards en pantalla. ~10 minutos.
 
+### Decisión de implementación · 2026-04-30
+
+**Atacando:** badge gradado calcula minutos al render; no se actualiza
+solo si no llega evento Realtime. Pedido abandonado puede mostrar
+"5 min" cuando ya van 35.
+
+**RULES:** §3 ningún memo. §2 sigue Client component (necesario para
+hooks).
+
+**Alcance final:** mover el `setInterval` DENTRO del `ProofWaitingBadge`
+en lugar del padre. Razón: solo los badges visibles necesitan
+recalcular; el padre re-renderearía todos los cards cada minuto en
+vano. Cleanup en unmount.
+
+**Alternativa descartada:** pasar un timestamp por prop desde el padre.
+Acopla el badge al padre sin necesidad — el badge ya tiene su propio
+input (`createdAt`).
+
 ---
 
 ## U02 · Toast persistente del beep se pierde con F5
 
 - **Severidad:** medium
-- **Estado:** open
+- **Estado:** in progress · 2026-04-30
 - **Ubicación:** [src/components/dashboard/orders-board.tsx:88-110](../../src/components/dashboard/orders-board.tsx#L88)
 
 ### Síntoma observable
@@ -38,12 +56,36 @@ El toast es estado local del componente, no persistente en DB. La alerta se dise
 ### Fix propuesto
 Al montar el panel, ejecutar una pasada inicial: para cada pedido `new` o `awaiting_payment` que cargue del server, emitir el toast persistente con su id. Al menos al volver al panel se reconstruye la lista de alertas pendientes. ~20 minutos.
 
+### Decisión de implementación · 2026-04-30
+
+**Atacando:** F5 destruye los toasts persistentes. Cajero no vuelve a
+oír beep ni ver alerta para pedidos que ya estaban en
+`awaiting_payment` o `new` antes de refrescar.
+
+**Caveat de scope:** filtro temporal — solo replay de pedidos
+RECIENTES (`created_at > now - 10min`). Sin esto, el cajero recibiría
+una avalancha de toasts si refresca con 50 pedidos abandonados de
+las últimas horas. La cota de 10 min cubre el caso normal (cajero
+refresca por accidente, no por necesidad de revisar histórico).
+
+**RULES:** §3 ningún memo. §2 client-only es necesario.
+
+**Alcance:** solo `orders-board.tsx`. useEffect que itera `initial`
+una vez al mount, filtra por `ALERTING_STATUSES` y `created_at`
+reciente, emite toast usando el mismo formato del INSERT-handler.
+**No reproduce el beep** — el cajero recién refrescó la página, ya
+tiene la atención en pantalla; doble estímulo es ruido.
+
+**Mensaje distinto al INSERT:** "Pedido pendiente" en lugar de
+"Pedido nuevo" para indicar al cajero que es replay, no algo que acaba
+de llegar.
+
 ---
 
 ## U03 · Audio puede estar bloqueado y el cajero no se da cuenta
 
 - **Severidad:** medium
-- **Estado:** open
+- **Estado:** in progress · 2026-04-30 — delegado a UI/UX Agent
 - **Ubicación:** [src/components/dashboard/orders-board.tsx:51-72](../../src/components/dashboard/orders-board.tsx#L51)
 
 ### Síntoma observable
@@ -57,12 +99,51 @@ La política del navegador es estándar; el problema es no surfacearlo al usuari
 ### Fix propuesto
 Banner persistente en la parte superior del panel: *"Activar sonidos"* con un botón. Al click, se crea el AudioContext y suena un beep de prueba. Banner desaparece. Si después de N segundos no se activa, mostrar un warning más prominente. ~1h.
 
+### Decisión de implementación · 2026-04-30
+
+**Atacando:** la autoplay policy bloquea el AudioContext hasta el primer
+gesto del usuario. Si el cajero abre el panel y NO toca nada (solo
+mira), el beep nunca suena. Combinado con U02 (toast persistente
+recover after F5), el cajero se queda sin alertas hasta tocar algo.
+
+**Por qué se delega a UI/UX Agent:** introduce un patrón nuevo del
+design system (banner persistente con CTA), no presente hoy en el
+proyecto. Feedback memory del proyecto explícito: *"cambios UI/UX que
+tocan ≥3 archivos o introducen patrones del design system van por Task
+tool, no inline"*.
+
+**RULES a respetar (que la delegación debe honrar):**
+- §1 Layering: el banner es UI puro; lógica de "audio activado" puede
+  vivir en `OrdersBoard` o en `useReplayPendingOrderToasts` ampliado.
+- §2 RSC default: el banner será Client (necesita estado de "activado").
+- §3 Sin memos.
+- §4 Tailwind v4 + tokens del design system del proyecto (terracota,
+  mostaza, success).
+- §5 Naming: `useAudioActivation` o `<ActivateAudioBanner>`.
+
+**Alcance esperado:**
+- Nuevo componente Client `<ActivateAudioBanner />` (o hook +
+  componente UI separado).
+- Banner aparece SOLO si AudioContext aún no se ha desbloqueado al
+  cargar el panel. Desaparece tras click + beep de prueba.
+- Si el usuario lo descarta, persistir en `localStorage` para que no
+  vuelva a aparecer en la sesión (opcional, decisión del agente).
+- Integración con `OrdersBoard`: el `audioCtxRef` actual se levanta a
+  un hook compartido entre el banner y el board.
+
+**Por qué NO se hace inline:** el componente es nuevo, requiere
+decisiones de UX (mensaje exacto, posición del banner, comportamiento
+tras descarte) y design (token de color, peso visual). Mejor decisión
+agregada del UI/UX Agent que iterar inline.
+
+**Estado:** se delega al UI/UX Agent en este turno.
+
 ---
 
 ## U04 · Mensajes de error genéricos en checkout
 
 - **Severidad:** low
-- **Estado:** open
+- **Estado:** in progress · 2026-04-30
 - **Ubicación:** [src/features/orders/actions.ts:303-307](../../src/features/orders/actions.ts#L303)
 
 ### Síntoma observable
@@ -79,12 +160,37 @@ Inspeccionar el tipo de error en el catch y mapear a mensajes específicos:
 
 ~30 minutos.
 
+### Decisión de implementación · 2026-04-30
+
+**Atacando alcance reducido:** los mensajes de error específicos que YA
+existen en `createOrder` (producto no disponible, sabores excedidos,
+mitad-y-mitad inválida, sabor en tamaño incompatible) son técnicamente
+correctos pero no le dicen al cliente QUÉ HACER. Mejorarlos para que
+sean accionables: *"Vuelve al catálogo y actualiza tu pedido"* en lugar
+de *"Producto o tamaño no disponible"*.
+
+NO ataco el catch genérico — distinguir tipos de error desde un catch
+es brittle (depende de mensajes de Postgres/Supabase). Ese trabajo es
+deuda futura si el piloto muestra problemas reales.
+
+**RULES:** todos n/a (cambio de copy en strings de error).
+
+**Alcance:** [src/features/orders/actions.ts](../../src/features/orders/actions.ts)
+4 strings de error reformulados. Sin cambios en UI ni en flujo.
+
+**Cómo se valida:** los tests de createOrder (D04-A) capturan el shape
+del INSERT pero no los mensajes de error específicos del item-loop.
+Los mensajes nuevos son strings — el equivalente de tests sería
+testear cada rama del item-loop, scope creep. Verificación manual:
+crear un pedido con producto inactivo o sabores excedidos y leer el
+toast.
+
 ---
 
 ## U05 · Toast del beep no identifica el pedido
 
 - **Severidad:** low
-- **Estado:** open
+- **Estado:** in progress · 2026-04-30
 - **Ubicación:** [src/components/dashboard/orders-board.tsx:104-110](../../src/components/dashboard/orders-board.tsx#L104)
 
 ### Síntoma observable
@@ -97,6 +203,25 @@ El payload del INSERT solo trae las columnas crudas de `orders` (no el customer 
 Agregar la hora de creación al toast: *"🍕 Pedido nuevo · $25.000 · 7:50 p. m."*. La hora viene en el `payload.new.created_at`. ~5 minutos.
 
 Más ambicioso: hacer un fetch ligero del nombre del cliente para incluirlo. Pero suma latencia y queries.
+
+### Decisión de implementación · 2026-04-30
+
+**Atacando:** dos pedidos del mismo monto que llegan juntos producen
+toasts idénticos; el cajero no distingue cuál es cuál.
+
+**Por qué AHORA:** ~5 min, coherente con el fix que hicimos a las
+notificaciones al cliente (mejora 1A). Una sola fuente de verdad
+para "identificación humana de pedido = hora".
+
+**RULES:** ✅ §3 ningún memo, ✅ §5 sin nombres nuevos, n/a el resto.
+
+**Alcance:** [orders-board.tsx](../../src/components/dashboard/orders-board.tsx)
+— inyectar hora formateada en el toast del INSERT. Reusa
+`Intl.DateTimeFormat("es-CO", hour12)` que ya existe en `order-card.tsx`.
+
+**Caveat:** el formatter está duplicado entre `send-order-update.ts`,
+`order-card.tsx` y ahora orders-board. Consolidar es deuda menor — D-nuevo
+no se justifica por 3 ocurrencias triviales (3 líneas cada una).
 
 ---
 
@@ -133,7 +258,7 @@ Cuando el carrito está vacío en `/pedir/[token]/checkout`, mostrar mensaje: *"
 ## U08 · Webview de WhatsApp en iOS sigue siendo fuente de fricción real
 
 - **Severidad:** high
-- **Estado:** open (sin solución técnica del lado del servidor)
+- **Estado:** **mitigated** · 2026-04-30 — pista en el copy del greet; bug externo no se cierra del lado server
 - **Ubicación:** Externa al código — bug del webview de WhatsApp iOS
 
 ### Síntoma observable
@@ -147,12 +272,31 @@ Agregar al copy del greet de Twilio una nota: *"Si la página no carga al abrir 
 
 A futuro: forzar `dynamic = "force-dynamic"` en `/pedir/[token]/page.tsx` y reducir el bundle del cliente para minimizar problemas de chunks. Investigación más profunda.
 
+### Decisión de implementación · 2026-04-30
+
+**Atacando:** el webview in-app de WhatsApp iOS es un bug externo que
+no podemos arreglar server-side. Mejor mitigación realista hoy: una
+línea en el copy del greet que le dice al cliente cómo abrirlo en
+Safari si la página no carga.
+
+**RULES:** ✅ todos n/a. Solo copy.
+
+**Alcance:** [whatsapp-twilio/greet.ts](../../src/features/whatsapp-twilio/greet.ts).
+Cuando Meta vuelva, replicar la misma pista en el template `pf_greet`
+(o aprobarlo con la nota incluida).
+
+**Caveat:** el iPhone iOS es ~50% del mercado en Colombia. El cliente
+real va a tener este problema seguido al abrir en WhatsApp por primera
+vez. Esta mitigación NO lo resuelve, solo le da una vía de escape.
+La investigación de "force-dynamic + bundle reduction" queda como D-nuevo
+si el problema persiste tras el copy fix.
+
 ---
 
 ## U09 · Hint del comprobante no menciona qué hacer si falla
 
 - **Severidad:** low
-- **Estado:** open
+- **Estado:** in progress · 2026-04-30
 - **Ubicación:** [src/components/shop/checkout-form.tsx:570-582](../../src/components/shop/checkout-form.tsx#L570)
 
 ### Síntoma observable
@@ -166,6 +310,20 @@ Si tenemos `settings.business_name` y un teléfono de contacto en `settings`, mo
 > *Si tienes problemas para subir el archivo aquí, escribe a {business_name} al WhatsApp donde recibiste este link.*
 
 Ya tenemos `business_name`. Ajustar copy. ~5 minutos.
+
+### Decisión de implementación · 2026-04-30
+
+**Atacando:** copy genérico que no le da al cliente una vía concreta
+de acción si el upload falla.
+
+**RULES:** ✅ todos n/a. Solo cambia copy.
+
+**Alcance:** [checkout-form.tsx](../../src/components/shop/checkout-form.tsx)
+recibe `settings: Settings` por prop. `settings.business_name` existe.
+Reemplazar el texto genérico por uno que mencione el nombre del
+restaurante y refiera al WhatsApp donde recibió el link (no
+necesitamos un teléfono nuevo — el cliente YA está conectado por ese
+canal).
 
 ---
 

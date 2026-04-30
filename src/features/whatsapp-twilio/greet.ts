@@ -65,7 +65,8 @@ export async function greetCustomerByPhoneTwilio(
 
     const body =
       `¡Hola ${name}! 🍕 Aquí está nuestro menú:\n${link}\n\n` +
-      `El link es solo para ti y expira en 2 horas.`;
+      `El link es solo para ti y expira en 2 horas.\n\n` +
+      `Si la página no carga, copia el link y ábrelo en tu navegador (Safari o Chrome).`;
 
     const result = await sendTwilioText(phoneE164, body);
     if (!result.ok) return { ok: false, error: result.error };

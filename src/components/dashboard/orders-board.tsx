@@ -2,11 +2,14 @@
 
 import { Inbox, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { toast } from "sonner";
 
+import { ActivateAudioBanner } from "@/components/dashboard/activate-audio-banner";
 import { OrderCard } from "@/components/dashboard/order-card";
 import { OrderDetailSheet } from "@/components/dashboard/order-detail";
+import { useAudioContext } from "@/components/dashboard/use-audio-context";
+import { useReplayPendingOrderToasts } from "@/components/dashboard/use-replay-pending-toasts";
 import type { ActiveDriver, CurrentStaff } from "@/features/auth/queries";
 import type { OrderSummary } from "@/features/orders/types";
 import { createClient } from "@/lib/supabase/client";
@@ -20,6 +23,24 @@ function formatCOP(cents: number): string {
     currency: "COP",
     maximumFractionDigits: 0,
   }).format(cents / 100);
+}
+
+// U05: hora del pedido para que el cajero distinga 2 pedidos del mismo
+// monto que llegan juntos. Mismo formato que `OrderCard` pero en 12h
+// (estilo conversacional, igual que las notificaciones al cliente).
+const hourFormatter = new Intl.DateTimeFormat("es-CO", {
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+  timeZone: "America/Bogota",
+});
+
+function formatHour(iso: string): string {
+  try {
+    return hourFormatter.format(new Date(iso));
+  } catch {
+    return "";
+  }
 }
 
 // Beep generado con Web Audio API: ~350ms a 880Hz con envelope para no asustar.
@@ -49,26 +70,12 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
   const router = useRouter();
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const audioCtxRef = useRef<AudioContext | null>(null);
+  // U03: AudioContext lazy + banner explícito si el cajero no toca nada.
+  const { ctxRef: audioCtxRef, isUnlocked: audioUnlocked, unlock: unlockAudio } =
+    useAudioContext();
 
-  // Autoplay policy: el AudioContext se debe crear/usar dentro del primer
-  // gesto del usuario. Lo inicializamos al primer pointerdown/keydown.
-  useEffect(() => {
-    function unlock(): void {
-      if (audioCtxRef.current) return;
-      try {
-        audioCtxRef.current = new AudioContext();
-      } catch {
-        audioCtxRef.current = null;
-      }
-    }
-    window.addEventListener("pointerdown", unlock, { once: true });
-    window.addEventListener("keydown", unlock, { once: true });
-    return () => {
-      window.removeEventListener("pointerdown", unlock);
-      window.removeEventListener("keydown", unlock);
-    };
-  }, []);
+  // U02: replay de toasts pendientes (encapsulado en su propio hook).
+  useReplayPendingOrderToasts(initial);
 
   useEffect(() => {
     const supabase = createClient();
@@ -94,6 +101,7 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
               id: string;
               status: string;
               total_cents: number;
+              created_at: string;
             };
             if (ALERTING_STATUSES.has(row.status)) {
               if (audioCtxRef.current) {
@@ -103,14 +111,19 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
                   // contexto cerrado o suspendido: ignorar
                 }
               }
-              toast(`🍕 ¡Pedido nuevo! ${formatCOP(row.total_cents)}`, {
-                id: row.id,
-                duration: Infinity,
-                action: {
-                  label: "Visto",
-                  onClick: () => toast.dismiss(row.id),
+              const hour = formatHour(row.created_at);
+              const tag = hour ? ` · ${hour}` : "";
+              toast(
+                `🍕 Pedido nuevo · ${formatCOP(row.total_cents)}${tag}`,
+                {
+                  id: row.id,
+                  duration: Infinity,
+                  action: {
+                    label: "Visto",
+                    onClick: () => toast.dismiss(row.id),
+                  },
                 },
-              });
+              );
             }
             startTransition(() => router.refresh());
           },
@@ -146,22 +159,13 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
     };
   }, [router]);
 
-  if (initial.length === 0) {
-    return (
-      <div className="flex min-h-[40vh] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">
-        <Inbox className="size-10 text-muted-foreground" />
-        <p className="font-serif text-xl text-foreground">
-          No hay pedidos activos
-        </p>
-        <p className="max-w-xs text-sm text-muted-foreground">
-          Cuando llegue uno nuevo aparecerá aquí automáticamente.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <>
+      <ActivateAudioBanner
+        isUnlocked={audioUnlocked}
+        onActivate={unlockAudio}
+      />
+
       {isPending ? (
         <div className="pointer-events-none fixed top-3 right-3 z-40 flex items-center gap-2 rounded-full bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm ring-1 ring-border">
           <Loader2 className="size-3.5 animate-spin" />
@@ -169,15 +173,27 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {initial.map((order) => (
-          <OrderCard
-            key={order.id}
-            order={order}
-            onSelect={setSelectedOrderId}
-          />
-        ))}
-      </div>
+      {initial.length === 0 ? (
+        <div className="flex min-h-[40vh] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">
+          <Inbox className="size-10 text-muted-foreground" />
+          <p className="font-serif text-xl text-foreground">
+            No hay pedidos activos
+          </p>
+          <p className="max-w-xs text-sm text-muted-foreground">
+            Cuando llegue uno nuevo aparecerá aquí automáticamente.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {initial.map((order) => (
+            <OrderCard
+              key={order.id}
+              order={order}
+              onSelect={setSelectedOrderId}
+            />
+          ))}
+        </div>
+      )}
 
       <OrderDetailSheet
         orderId={selectedOrderId}

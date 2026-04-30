@@ -573,7 +573,8 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
                       />
                       <span>
                         Si tienes problemas para subir el archivo aquí,
-                        comunícate con el restaurante.
+                        escríbele a {settings.business_name} al WhatsApp
+                        donde recibiste este link.
                       </span>
                     </div>
                   </div>
