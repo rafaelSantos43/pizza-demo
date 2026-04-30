@@ -1,4 +1,3 @@
-import { isDemoMode } from "@/lib/demo";
 import { getServerEnv } from "@/lib/env";
 import { handleIncomingPayload } from "@/features/whatsapp/handle-incoming";
 import { verifyMetaSignature } from "@/features/whatsapp/verify-signature";
@@ -11,10 +10,6 @@ export async function GET(req: Request) {
 
   if (mode !== "subscribe") {
     return new Response("Forbidden", { status: 403 });
-  }
-
-  if (isDemoMode()) {
-    return new Response(challenge, { status: 200 });
   }
 
   const expected = getServerEnv().WHATSAPP_VERIFY_TOKEN;

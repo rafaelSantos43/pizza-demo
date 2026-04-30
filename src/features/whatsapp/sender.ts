@@ -1,6 +1,5 @@
 import "server-only";
 
-import { isDemoMode } from "@/lib/demo";
 import { getServerEnv } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { OrderStatus } from "@/features/orders/types";
@@ -27,11 +26,6 @@ export async function sendTemplate(input: {
   params?: string[];
 }): Promise<SendResult> {
   const { to, templateKey, params = [] } = input;
-
-  if (isDemoMode()) {
-    console.log("[whatsapp:demo] sendTemplate", input);
-    return { ok: true };
-  }
 
   const spec = TEMPLATES[templateKey];
   if (params.length !== spec.bodyParams) {
@@ -87,11 +81,6 @@ export async function sendTextMessage(
   to: string,
   body: string,
 ): Promise<SendResult> {
-  if (isDemoMode()) {
-    console.log("[whatsapp:demo] sendTextMessage", { to, body });
-    return { ok: true };
-  }
-
   const env = getServerEnv();
   const payload = {
     messaging_product: "whatsapp",
@@ -127,15 +116,6 @@ export async function sendOrderStatusTemplate(
 ): Promise<SendResult> {
   const templateKey = templateForStatus(toStatus);
   if (!templateKey) return { ok: true };
-
-  if (isDemoMode()) {
-    console.log("[whatsapp:demo] sendOrderStatusTemplate", {
-      orderId,
-      toStatus,
-      templateKey,
-    });
-    return { ok: true };
-  }
 
   try {
     const { data, error } = await supabaseAdmin

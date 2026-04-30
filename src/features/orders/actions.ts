@@ -8,7 +8,6 @@ import { SIZE_ORDER, type PizzaSize } from "@/features/catalog/types";
 import { markTokenUsed } from "@/features/order-tokens/mark-used";
 import { verifyToken } from "@/features/order-tokens/verify";
 import { sendOrderStatusTemplate } from "@/features/whatsapp/sender";
-import { isDemoMode } from "@/lib/demo";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 import { computeEtaAt } from "./eta";
@@ -101,17 +100,6 @@ export async function createOrder(
     return { ok: false, error: "Datos inválidos" };
   }
   const data = parsed.data;
-
-  if (isDemoMode()) {
-    console.log("[orders:demo] createOrder", {
-      items: data.items.length,
-      method: data.paymentMethod,
-    });
-    return {
-      ok: true,
-      data: { orderId: "demo-0001-aaaa-bbbb-cccc-dddddddddddd" },
-    };
-  }
 
   const tokenResult = await verifyToken(data.token);
   if (!tokenResult.ok) {
@@ -342,8 +330,6 @@ export async function transitionOrder(input: {
   toStatus: OrderStatus;
   reason?: string;
 }): Promise<SimpleResult> {
-  if (isDemoMode()) return { ok: true };
-
   const staff = await getCurrentStaff();
   if (!staff) return { ok: false, error: "No autorizado" };
 
@@ -407,8 +393,6 @@ export async function transitionOrder(input: {
 }
 
 export async function approvePayment(orderId: string): Promise<SimpleResult> {
-  if (isDemoMode()) return { ok: true };
-
   const staff = await getCurrentStaff();
   if (!staff) return { ok: false, error: "No autorizado" };
 
@@ -441,8 +425,6 @@ export async function assignDriver(input: {
   orderId: string;
   driverId: string | null;
 }): Promise<SimpleResult> {
-  if (isDemoMode()) return { ok: true };
-
   const staff = await getCurrentStaff();
   if (!staff) return { ok: false, error: "No autorizado" };
 

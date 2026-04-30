@@ -1,6 +1,5 @@
 import "server-only";
 
-import { isDemoMode } from "@/lib/demo";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { sendTemplate } from "@/features/whatsapp/sender";
 
@@ -19,11 +18,6 @@ interface CandidateRow {
 }
 
 export async function runDelayAlerts(): Promise<RunDelayAlertsResult> {
-  if (isDemoMode()) {
-    console.log("[delay-alerts:demo] skip");
-    return { ok: true, processed: 0, errors: 0 };
-  }
-
   const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
 
   const { data: rows, error } = await supabaseAdmin

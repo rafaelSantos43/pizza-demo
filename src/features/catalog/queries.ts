@@ -1,9 +1,7 @@
 import "server-only";
 
-import { isDemoMode } from "@/lib/demo";
 import { createClient } from "@/lib/supabase/server";
 
-import { DEMO_PRODUCTS } from "./demo-fixtures";
 import {
   SIZE_ORDER,
   type PizzaSize,
@@ -46,10 +44,6 @@ function mapRow(row: RawProductRow): Product {
 }
 
 export async function listActiveProductsWithSizes(): Promise<Product[]> {
-  if (isDemoMode()) {
-    return DEMO_PRODUCTS.filter((p) => p.active);
-  }
-
   const supabase = await createClient();
 
   const { data, error } = await supabase
@@ -64,13 +58,6 @@ export async function listActiveProductsWithSizes(): Promise<Product[]> {
 }
 
 export async function listAllProducts(): Promise<Product[]> {
-  if (isDemoMode()) {
-    return [...DEMO_PRODUCTS].sort((a, b) => {
-      if (a.active !== b.active) return a.active ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-  }
-
   const supabase = await createClient();
 
   const { data, error } = await supabase
@@ -85,10 +72,6 @@ export async function listAllProducts(): Promise<Product[]> {
 }
 
 export async function getProduct(id: string): Promise<Product | null> {
-  if (isDemoMode()) {
-    return DEMO_PRODUCTS.find((p) => p.id === id) ?? null;
-  }
-
   const supabase = await createClient();
 
   const { data, error } = await supabase
@@ -104,21 +87,6 @@ export async function getProduct(id: string): Promise<Product | null> {
 }
 
 export async function getSettings(): Promise<Settings> {
-  if (isDemoMode()) {
-    return {
-      business_name: "Pizza Demo",
-      payment_accounts: {
-        nequi: "300 123 4567",
-        bancolombia: "1234 5678 9012",
-        llave: "@pizza-demo",
-      },
-      delivery_zones: [
-        { zone: "A", eta_min: 30 },
-        { zone: "B", eta_min: 45 },
-      ],
-    };
-  }
-
   const supabase = await createClient();
 
   const { data, error } = await supabase

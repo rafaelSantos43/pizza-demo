@@ -9,7 +9,6 @@ function sign(body: string): string {
 
 beforeEach(() => {
   vi.resetModules();
-  vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "false");
   vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key");
   vi.stubEnv(
     "ORDER_TOKEN_SECRET",
@@ -64,12 +63,5 @@ describe("verifyMetaSignature", () => {
       const ok = verifyMetaSignature("body", tooShort);
       expect(ok).toBe(false);
     }).not.toThrow();
-  });
-
-  it("accepts anything in demo mode", async () => {
-    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
-    const { verifyMetaSignature } = await import("../verify-signature");
-    expect(verifyMetaSignature("body", null)).toBe(true);
-    expect(verifyMetaSignature("body", "garbage")).toBe(true);
   });
 });

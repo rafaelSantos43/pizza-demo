@@ -1,14 +1,8 @@
 import "server-only";
 
-import { isDemoMode } from "@/lib/demo";
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
-import {
-  DEMO_ORDER_DETAILS,
-  DEMO_ORDER_SUMMARIES,
-  toConfirmation,
-} from "./demo-fixtures";
 import type {
   OrderDetail,
   OrderDetailAddress,
@@ -34,11 +28,6 @@ export interface OrderConfirmation {
 export async function getOrderConfirmation(
   orderId: string,
 ): Promise<OrderConfirmation | null> {
-  if (isDemoMode()) {
-    const detail = DEMO_ORDER_DETAILS[orderId] ?? Object.values(DEMO_ORDER_DETAILS)[0];
-    return detail ? toConfirmation(detail) : null;
-  }
-
   const { data, error } = await supabaseAdmin
     .from("orders")
     .select(
@@ -96,8 +85,6 @@ function mapActiveOrderRow(row: ActiveOrderRow): OrderSummary {
 }
 
 export async function listActiveOrders(): Promise<OrderSummary[]> {
-  if (isDemoMode()) return DEMO_ORDER_SUMMARIES;
-
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("orders")
@@ -114,13 +101,6 @@ export async function listActiveOrders(): Promise<OrderSummary[]> {
 export async function listOrdersForDriver(
   driverId: string | null,
 ): Promise<OrderSummary[]> {
-  if (isDemoMode()) {
-    const filtered = DEMO_ORDER_SUMMARIES.filter((o) =>
-      driverId === null ? o.driver_id !== null : o.driver_id === driverId,
-    ).filter((o) => o.status !== "delivered" && o.status !== "cancelled");
-    return sortByEtaThenCreated(filtered);
-  }
-
   const supabase = await createClient();
   const base = supabase
     .from("orders")
@@ -139,20 +119,6 @@ export async function listOrdersForDriver(
 
   const rows = (data ?? []) as unknown as ActiveOrderRow[];
   return rows.map(mapActiveOrderRow);
-}
-
-function sortByEtaThenCreated(orders: OrderSummary[]): OrderSummary[] {
-  return orders.slice().sort((a, b) => {
-    if (a.eta_at && b.eta_at) {
-      const diff = a.eta_at.localeCompare(b.eta_at);
-      if (diff !== 0) return diff;
-    } else if (a.eta_at) {
-      return -1;
-    } else if (b.eta_at) {
-      return 1;
-    }
-    return b.created_at.localeCompare(a.created_at);
-  });
 }
 
 interface OrderDetailRow {
@@ -191,8 +157,6 @@ interface OrderDetailRow {
 export async function getOrderDetail(
   orderId: string,
 ): Promise<OrderDetail | null> {
-  if (isDemoMode()) return DEMO_ORDER_DETAILS[orderId] ?? null;
-
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("orders")

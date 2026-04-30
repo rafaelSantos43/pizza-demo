@@ -2,11 +2,9 @@
 
 import { randomUUID } from "node:crypto";
 
-import { isDemoMode } from "@/lib/demo";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 import {
-  ALLOWED_PROOF_MIME,
   uploadProofInputSchema,
   type AllowedProofMime,
 } from "./schemas";
@@ -33,15 +31,6 @@ export async function uploadPaymentProof(
     return { ok: false, error: "Archivo inválido" };
   }
   const { orderTokenId, file } = parsed.data;
-
-  if (isDemoMode()) {
-    console.log("[payments:demo] uploadPaymentProof", {
-      orderTokenId,
-      mime: file.type,
-      size: file.size,
-    });
-    return { ok: true, data: { path: `demo/${orderTokenId}/proof.png` } };
-  }
 
   try {
     const { data: tokenRow, error: tokenErr } = await supabaseAdmin

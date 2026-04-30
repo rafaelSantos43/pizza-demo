@@ -7,7 +7,6 @@ import { useEffect, useTransition } from "react";
 import { DriverOrderCard } from "@/components/dashboard/driver-order-card";
 import type { StaffRole } from "@/features/auth/queries";
 import type { OrderSummary } from "@/features/orders/types";
-import { isDemoMode } from "@/lib/demo";
 import { createClient } from "@/lib/supabase/client";
 
 interface DriverOrdersListProps {
@@ -24,9 +23,6 @@ export function DriverOrdersList({
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
-    // En demo no hay Supabase real al que conectarse.
-    if (isDemoMode()) return;
-
     const supabase = createClient();
     const channel = supabase
       .channel("driver-orders-feed")

@@ -1,7 +1,5 @@
 import { z } from "zod";
 
-import { DEMO_PUBLIC_ENV, DEMO_SERVER_ENV, isDemoMode } from "@/lib/demo";
-
 const serverSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 
@@ -29,11 +27,6 @@ let clientEnvCache: z.infer<typeof clientSchema> | null = null;
 export function getClientEnv() {
   if (clientEnvCache) return clientEnvCache;
 
-  if (isDemoMode()) {
-    clientEnvCache = clientSchema.parse(DEMO_PUBLIC_ENV);
-    return clientEnvCache;
-  }
-
   const parsed = clientSchema.safeParse({
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
@@ -55,11 +48,6 @@ export function getServerEnv() {
     throw new Error("getServerEnv() must not be called from the browser");
   }
   if (serverEnvCache) return serverEnvCache;
-
-  if (isDemoMode()) {
-    serverEnvCache = serverSchema.parse(DEMO_SERVER_ENV);
-    return serverEnvCache;
-  }
 
   const parsed = serverSchema.safeParse(process.env);
   if (!parsed.success) {

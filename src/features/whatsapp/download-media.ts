@@ -1,6 +1,5 @@
 import "server-only";
 
-import { isDemoMode } from "@/lib/demo";
 import { getServerEnv } from "@/lib/env";
 
 interface MediaPayload {
@@ -11,8 +10,6 @@ interface MediaPayload {
 export async function downloadMedia(
   mediaId: string,
 ): Promise<MediaPayload | null> {
-  if (isDemoMode()) return null;
-
   const env = getServerEnv();
   const auth = `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`;
 

@@ -1,6 +1,5 @@
 import "server-only";
 
-import { isDemoMode } from "@/lib/demo";
 import { getClientEnv } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { signToken } from "@/features/order-tokens/sign";
@@ -17,16 +16,6 @@ export async function greetCustomerByPhone(
   phoneE164: string,
   customerName?: string,
 ): Promise<GreetResult> {
-  // Demo mode no toca DB ni envía nada (preserva el comportamiento de los
-  // otros senders en demo: log + ok sin escribir en Supabase real).
-  if (isDemoMode()) {
-    console.log("[whatsapp:demo] greetCustomerByPhone", {
-      phoneE164,
-      customerName,
-    });
-    return { ok: true, tokenIssued: false };
-  }
-
   try {
     const upsertPayload: { phone: string; name?: string } = {
       phone: phoneE164,

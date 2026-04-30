@@ -2,17 +2,12 @@ import "server-only";
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import { isDemoMode } from "@/lib/demo";
 import { getServerEnv } from "@/lib/env";
 
 export function verifyMetaSignature(
   rawBody: string,
   signatureHeader: string | null,
 ): boolean {
-  // Demo mode: aceptamos cualquier firma para permitir smoke con curl local
-  // sin compartir el app secret real de Meta.
-  if (isDemoMode()) return true;
-
   if (!signatureHeader || !signatureHeader.startsWith("sha256=")) return false;
 
   const provided = signatureHeader.slice("sha256=".length);

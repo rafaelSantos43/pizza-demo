@@ -1,6 +1,5 @@
 import "server-only";
 
-import { isDemoMode } from "@/lib/demo";
 import { createClient } from "@/lib/supabase/server";
 
 export type StaffRole = "admin" | "cashier" | "kitchen" | "driver";
@@ -12,16 +11,7 @@ export interface CurrentStaff {
   displayName: string | null;
 }
 
-const DEMO_STAFF: CurrentStaff = {
-  id: "demo-staff-id",
-  email: "demo@pizza-demo.local",
-  role: "admin",
-  displayName: "Demo Admin",
-};
-
 export async function getCurrentStaff(): Promise<CurrentStaff | null> {
-  if (isDemoMode()) return DEMO_STAFF;
-
   const supabase = await createClient();
   const {
     data: { user },
@@ -53,10 +43,6 @@ export interface ActiveDriver {
 }
 
 export async function listActiveDrivers(): Promise<ActiveDriver[]> {
-  if (isDemoMode()) {
-    return [{ id: "demo-driver-1", displayName: "Camilo Domiciliario" }];
-  }
-
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("profiles")

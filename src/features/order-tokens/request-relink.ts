@@ -2,7 +2,6 @@
 
 import { z } from "zod";
 
-import { isDemoMode } from "@/lib/demo";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { relinkCustomerTwilio } from "@/features/whatsapp-twilio/greet";
 
@@ -34,22 +33,20 @@ export async function requestNewLinkByToken(input: {
     return { ok: false, error: "invalid_token" };
   }
 
-  if (!isDemoMode()) {
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const { count, error: countErr } = await supabaseAdmin
-      .from("order_tokens")
-      .select("id", { count: "exact", head: true })
-      .eq("customer_id", resolved.customerId)
-      .gte("created_at", oneHourAgo);
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const { count, error: countErr } = await supabaseAdmin
+    .from("order_tokens")
+    .select("id", { count: "exact", head: true })
+    .eq("customer_id", resolved.customerId)
+    .gte("created_at", oneHourAgo);
 
-    if (countErr) {
-      console.error("[relink] rate-limit query failed", countErr);
-      return { ok: false, error: "send_failed" };
-    }
+  if (countErr) {
+    console.error("[relink] rate-limit query failed", countErr);
+    return { ok: false, error: "send_failed" };
+  }
 
-    if ((count ?? 0) >= RATE_LIMIT_PER_HOUR) {
-      return { ok: false, error: "rate_limited" };
-    }
+  if ((count ?? 0) >= RATE_LIMIT_PER_HOUR) {
+    return { ok: false, error: "rate_limited" };
   }
 
   const sent = await relinkCustomerTwilio(resolved.customerId);

@@ -3,17 +3,14 @@
 import { revalidatePath } from "next/cache";
 
 import { requireStaff } from "@/features/auth/guards";
-import { isDemoMode } from "@/lib/demo";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
-import { DEMO_PRODUCTS } from "./demo-fixtures";
 import {
   productInputSchema,
   productUpdateInputSchema,
   type ProductInput,
   type ProductUpdateInput,
 } from "./schemas";
-import type { Product } from "./types";
 
 type SimpleResult = { ok: true } | { ok: false; error: string };
 type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -53,24 +50,6 @@ export async function createProduct(
   }
   const data = parsed.data;
 
-  if (isDemoMode()) {
-    const id = `demo-product-${Date.now().toString(36)}`;
-    const product: Product = {
-      id,
-      name: data.name,
-      category: data.category,
-      description: data.description ?? null,
-      image_url: data.image_url ?? null,
-      max_flavors: data.max_flavors,
-      min_size_for_multiflavor: data.min_size_for_multiflavor ?? null,
-      active: true,
-      sizes: data.sizes.map((s) => ({ size: s.size, price_cents: s.price_cents })),
-    };
-    DEMO_PRODUCTS.push(product);
-    revalidateCatalog();
-    return { ok: true, data: { id } };
-  }
-
   try {
     const { data: productRow, error: productErr } = await supabaseAdmin
       .from("products")
@@ -104,24 +83,6 @@ export async function updateProduct(
   }
   const data: ProductUpdateInput = parsed.data;
 
-  if (isDemoMode()) {
-    const idx = DEMO_PRODUCTS.findIndex((p) => p.id === data.id);
-    if (idx === -1) return { ok: false, error: "Producto no encontrado" };
-    DEMO_PRODUCTS[idx] = {
-      ...DEMO_PRODUCTS[idx],
-      name: data.name,
-      category: data.category,
-      description: data.description ?? null,
-      image_url: data.image_url ?? null,
-      max_flavors: data.max_flavors,
-      min_size_for_multiflavor: data.min_size_for_multiflavor ?? null,
-      active: data.active ?? DEMO_PRODUCTS[idx].active,
-      sizes: data.sizes.map((s) => ({ size: s.size, price_cents: s.price_cents })),
-    };
-    revalidateCatalog();
-    return { ok: true };
-  }
-
   try {
     const productUpdate: Record<string, unknown> = buildProductRow(data);
     if (data.active !== undefined) productUpdate.active = data.active;
@@ -153,14 +114,6 @@ export async function toggleProductActive(input: {
 }): Promise<SimpleResult> {
   await requireStaff({ roles: ["admin"] });
 
-  if (isDemoMode()) {
-    const product = DEMO_PRODUCTS.find((p) => p.id === input.id);
-    if (!product) return { ok: false, error: "Producto no encontrado" };
-    product.active = input.active;
-    revalidateCatalog();
-    return { ok: true };
-  }
-
   try {
     const { error } = await supabaseAdmin
       .from("products")
@@ -178,14 +131,6 @@ export async function toggleProductActive(input: {
 
 export async function deleteProduct(id: string): Promise<SimpleResult> {
   await requireStaff({ roles: ["admin"] });
-
-  if (isDemoMode()) {
-    const product = DEMO_PRODUCTS.find((p) => p.id === id);
-    if (!product) return { ok: false, error: "Producto no encontrado" };
-    product.active = false;
-    revalidateCatalog();
-    return { ok: true };
-  }
 
   try {
     // Soft delete: order_items referencia productos pasados; el hard delete rompería la auditoría histórica.

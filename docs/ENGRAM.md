@@ -39,6 +39,23 @@
 
 ## Decisiones tomadas (log en orden cronológico inverso)
 
+### 2026-04-30 — Removido el demo mode completo
+**Qué:** eliminado todo el código de `NEXT_PUBLIC_DEMO_MODE`. Cambios concretos:
+- Borrado: [src/lib/demo.ts](../src/lib/demo.ts), [src/features/orders/demo-fixtures.ts](../src/features/orders/demo-fixtures.ts), [src/features/catalog/demo-fixtures.ts](../src/features/catalog/demo-fixtures.ts) (~500 líneas).
+- Removido el fallback a `DEMO_PUBLIC_ENV`/`DEMO_SERVER_ENV` en [src/lib/env.ts](../src/lib/env.ts) — `getClientEnv`/`getServerEnv` ahora exigen vars reales o tiran con Zod.
+- Removido `if (isDemoMode())` de 16 archivos: actions, queries, senders, route handlers, middleware, drivers list. Cada rama era un early return con fixtures o un no-op de envío.
+- En [middleware.ts](../middleware.ts) también se quitó el try/catch alrededor de `getClientEnv()` (era defensa para "sin .env.local" que ya no aplica). Si faltan vars, el middleware truena fuerte y se entera el dev.
+- Test [verify-signature.test.ts](../src/features/whatsapp/__tests__/verify-signature.test.ts): borrado el test "accepts anything in demo mode" y el stub de `NEXT_PUBLIC_DEMO_MODE`. 37/37 tests siguen pasando.
+- Entrada del 2026-04-16 sobre demo mode tachada con ~~strikethrough~~ abajo (queda para historia, no aplica).
+
+**Por qué:** el demo mode fue útil en semana 1 cuando no había `.env.local`, no había prod, y el UI Agent necesitaba ver pantallas. Hoy hay `.env.local` con creds reales, prod desplegado en `pizza-demo-five.vercel.app`, data real en Supabase (33 pizzas seedeadas), y todo el flujo se prueba contra DB real desde hace semanas. Mantenerlo costaba: cada Server Action arranca con `if (isDemoMode())` que el dev tiene que saltarse mentalmente, los fixtures pueden silenciosamente desfasarse cuando los tipos cambian, y multiplica los caminos a probar. YAGNI explícito: no hay caso de uso vivo para demo mode hoy. Si un demo "sin DB" se necesita en el futuro (ej. screenshot para venta), se hace con un seed específico de Supabase, no con fixtures hardcoded.
+
+**Cómo aplica:**
+- **Para correr local:** ahora es obligatorio tener `.env.local` con todas las vars del schema Zod. `bun run dev` truena claro y temprano si falta alguna.
+- **`getServerEnv()` lazy validation se conserva** — sigue siendo la razón por la que un build de Next no truena por importar un módulo sin las vars; solo trona al primer uso real.
+- **Si volvemos a necesitar demo:** seedear una BD secundaria de Supabase (free tier) con data ficticia y rotar `NEXT_PUBLIC_SUPABASE_URL` cuando se quiera grabar un video. Cero código.
+- Entradas históricas que mencionan "demo mode" (LAUNCH_CHECKLIST §A, ENGRAM 2026-04-16) quedan como log; no se actualizan retroactivamente.
+
 ### 2026-04-30 — Removida la feature de impresión completa, reemplazada por alerta sonora + toast persistente
 **Qué:** se elimina toda la integración con ticketera/PrintNode/ESC/POS del MVP. Cambios concretos:
 - Borrado: `app/api/print/[orderId]/` (route handler vacío) y la carpeta planeada `src/features/printing/` (nunca había contenido).
@@ -290,20 +307,8 @@ NO se renombró el agente en otros docs ([CLAUDE.md](../CLAUDE.md), [AGENTS.md](
 
 **Smoke local (demo mode) sin Meta**: curl GET con `?hub.mode=subscribe&hub.verify_token=demo&hub.challenge=12345` → 200 con "12345". curl POST con payload de mensaje texto → 200 `{"ok":true}` (los efectos quedan stubbed).
 
-### 2026-04-16 — Demo mode (`NEXT_PUBLIC_DEMO_MODE=true`)
-**Qué:** [src/lib/demo.ts](../src/lib/demo.ts) define `isDemoMode()` + placeholders de env. Cuando `NEXT_PUBLIC_DEMO_MODE=true`:
-- `getClientEnv()` y `getServerEnv()` retornan placeholders válidos (no tiran).
-- `middleware.ts` hace passthrough sin tocar Supabase real.
-- `getCurrentStaff()` retorna `DEMO_STAFF` (admin).
-- `listActiveOrders()`, `getOrderDetail()`, `getOrderConfirmation()` retornan fixtures de [src/features/orders/demo-fixtures.ts](../src/features/orders/demo-fixtures.ts) (5 pedidos cubriendo `awaiting_payment` con/sin proof, `preparing`, `ready`, `on_the_way + delayed`).
-- `transitionOrder`, `approvePayment`, `rejectPayment`, `assignDriver` son no-ops `{ ok: true }`.
-- `getSignedProofUrl()` retorna null.
-**Por qué:** permite navegar el panel y validar UI/UX sin ceremonia de setup de Supabase. Útil para revisiones rápidas, screenshots, o desarrollo de componentes nuevos sin DB. Activación opt-in (no auto-detect) para evitar que se cuele a producción.
-**Cómo aplica:**
-- Activar: `echo "NEXT_PUBLIC_DEMO_MODE=true" > .env.local` + restart dev server (Next no recarga `.env.local` con HMR).
-- Desactivar: borrar la línea (o ponerla en `false`) y llenar el resto del `.env.local` con creds reales.
-- **Solo cubre el panel.** El catálogo del cliente (`/pedir/[token]`) NO está en demo — las queries de catalog y order-tokens siguen yendo a Supabase real. Si se necesita después, extender el patrón a esas features.
-- Hidratación: los formatters tipo `Intl.DateTimeFormat` deben pinear `timeZone: "America/Bogota"` para que server y client renderen igual (ver `OrderCard`); cuando agreguemos formatters relativos ("hace 5 min"), evaluar moverlos a client-only para evitar mismatches.
+### ~~2026-04-16 — Demo mode (`NEXT_PUBLIC_DEMO_MODE=true`)~~ _(removido el 2026-04-30, ver entrada al inicio del log)_
+~~**Qué:** [src/lib/demo.ts] definía `isDemoMode()` + placeholders de env. Cuando `NEXT_PUBLIC_DEMO_MODE=true`, `getClientEnv`/`getServerEnv` retornaban placeholders, middleware hacía passthrough, `getCurrentStaff()` retornaba `DEMO_STAFF`, queries de orders/catalog retornaban fixtures, mutaciones eran no-ops `{ ok: true }`. Útil mientras no había `.env.local` ni prod desplegado.~~ El reflejo "hidratación con `timeZone: America/Bogota` en formatters" sigue vigente como guía general (ver `OrderCard`) aunque la entrada como tal ya no aplica.
 
 ### 2026-04-16 — Login de staff + middleware + panel `/pedidos`
 **Qué:** entregadas las features `auth` (`getCurrentStaff`, `requireStaff`, `requestMagicLink`, `signOut`), `orders` extendido (`listActiveOrders`, `getOrderDetail`, `transitionOrder`, `approvePayment`, `rejectPayment`, `assignDriver`), `payments/signed-url` (`getSignedProofUrl`), `whatsapp/sender` (stub que solo logea hasta que el webhook real exista). UI: `/login` (RHF + Zod, magic link via Supabase OTP), Route Handler `/auth/callback` (exchangeCodeForSession), `(dashboard)` layout con shell responsivo (sidebar lg+, hamburger sheet en móvil) + nav, `/pedidos` panel con `OrdersBoard` realtime, `OrderCard`, `OrderDetailSheet` con acciones de transición. Placeholders "Próximamente" en `/mensajero`, `/menu`, `/settings`. Build verde con 11 rutas.

@@ -2,7 +2,6 @@ import "server-only";
 
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
-import { isDemoMode } from "@/lib/demo";
 import { getServerEnv } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -21,17 +20,6 @@ function sha256Hex(input: string): string {
 // 2-step: verify SOLO lee. createOrder marca used_at. Así el catálogo sigue
 // vigente si el cliente refresca antes de confirmar.
 export async function verifyToken(token: string): Promise<VerifyResult> {
-  if (isDemoMode()) {
-    if (token === "demo") {
-      return {
-        ok: true,
-        customerId: "00000000-0000-4000-8000-00000000c001",
-        tokenId: "00000000-0000-4000-8000-000000000001",
-      };
-    }
-    return { ok: false, reason: "malformed" };
-  }
-
   const parts = token.split(".");
   if (parts.length !== 3) return { ok: false, reason: "malformed" };
 
@@ -82,17 +70,6 @@ export async function verifyToken(token: string): Promise<VerifyResult> {
 export async function getCustomerIdFromExpiredToken(
   token: string,
 ): Promise<ResolveExpiredTokenResult> {
-  if (isDemoMode()) {
-    if (token === "demo") {
-      return {
-        ok: true,
-        customerId: "00000000-0000-4000-8000-00000000c001",
-        reason: "expired",
-      };
-    }
-    return { ok: false, reason: "malformed" };
-  }
-
   const parts = token.split(".");
   if (parts.length !== 3) return { ok: false, reason: "malformed" };
 

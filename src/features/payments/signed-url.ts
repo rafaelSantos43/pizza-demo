@@ -1,14 +1,11 @@
 import "server-only";
 
-import { isDemoMode } from "@/lib/demo";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export async function getSignedProofUrl(
   path: string,
   expiresInSec = 3600,
 ): Promise<string | null> {
-  if (isDemoMode()) return null;
-
   try {
     const { data, error } = await supabaseAdmin.storage
       .from("payment-proofs")
