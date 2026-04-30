@@ -14,6 +14,7 @@ Lee en este orden (puedes leerlos en paralelo con una sola respuesta):
 2. **[docs/RULES.md](docs/RULES.md)** — Reglas de código **no negociables**. Atención especial a §3 (memoización prohibida sin profiling) y §2 (Server vs Client components).
 3. **[docs/ENGRAM.md](docs/ENGRAM.md)** — Memoria persistente del proyecto. Log de todas las decisiones tomadas con qué + por qué. Revisa antes de tomar decisiones que puedan contradecir lo ya acordado.
 4. **[docs/AGENTS.md](docs/AGENTS.md)** — Índice del sistema de agentes y aviso crítico sobre Next.js 16.
+5. **[docs/audit/README.md](docs/audit/README.md)** — **Si la tarea es actuar sobre un hallazgo de auditoría** (algo en `docs/audit/logica.md`, `ui-ux.md` o `deuda-tecnica.md`), leer también este protocolo. Tiene la plantilla de **Decisión de implementación** que es obligatoria antes de tocar código por un finding.
 
 Para cada tarea específica, lee también:
 - UI / componentes / estilos → **[docs/agents/ui-agent.md](docs/agents/ui-agent.md)**
@@ -126,6 +127,7 @@ repórtalo en lugar de hacerlo tú.
 - ❌ Dejar ENGRAM sin actualizar después de una decisión nueva
 - ❌ Dos agentes tocando los mismos archivos en paralelo
 - ❌ Mezclar UI y Data en el mismo agente
+- ❌ **Implementar un hallazgo de `docs/audit/` sin antes escribir el bloque "Decisión de implementación" contrastando contra RULES.md y revisando contradicciones con otros hallazgos.** El "Fix propuesto" del audit es bosquejo, no permiso.
 
 Ver detalle completo en [docs/agents/orchestrator.md](docs/agents/orchestrator.md).
 

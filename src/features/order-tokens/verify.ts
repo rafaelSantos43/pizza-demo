@@ -5,7 +5,11 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { getServerEnv } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
-import type { ResolveExpiredTokenResult, VerifyResult } from "./schemas";
+import type {
+  ResolveExpiredTokenResult,
+  ResolveTokenCustomerResult,
+  VerifyResult,
+} from "./schemas";
 
 function base64urlToBuffer(input: string): Buffer {
   const pad = input.length % 4 === 0 ? "" : "=".repeat(4 - (input.length % 4));
@@ -117,4 +121,45 @@ export async function getCustomerIdFromExpiredToken(
     customerId: row.customer_id,
     reason: isExpired ? "expired" : "used",
   };
+}
+
+// Resuelve el customer_id de un token con firma válida, sin importar
+// el estado de vida (válido, usado, expirado). Se usa donde solo nos
+// interesa la identidad del titular del token, no su autorización para
+// crear pedidos. Caso típico: página de gracias, donde el token recién
+// se marcó `used` al confirmar el pedido.
+export async function resolveTokenCustomer(
+  token: string,
+): Promise<ResolveTokenCustomerResult> {
+  const parts = token.split(".");
+  if (parts.length !== 3) return { ok: false, reason: "malformed" };
+
+  const [id, iatPart, sigPart] = parts;
+  if (!id || !iatPart || !sigPart) return { ok: false, reason: "malformed" };
+
+  const payload = `${id}.${iatPart}`;
+  const expected = createHmac("sha256", getServerEnv().ORDER_TOKEN_SECRET)
+    .update(payload)
+    .digest();
+  const provided = base64urlToBuffer(sigPart);
+
+  if (
+    expected.length !== provided.length ||
+    !timingSafeEqual(expected, provided)
+  ) {
+    return { ok: false, reason: "invalid_signature" };
+  }
+
+  const tokenHash = sha256Hex(token);
+  const { data, error } = await supabaseAdmin
+    .from("order_tokens")
+    .select("customer_id")
+    .eq("token_hash", tokenHash)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return { ok: false, reason: "not_found" };
+
+  const row = data as { customer_id: string };
+  return { ok: true, customerId: row.customer_id };
 }

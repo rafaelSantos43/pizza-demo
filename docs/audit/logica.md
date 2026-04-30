@@ -34,7 +34,7 @@ Mover toda la cascada a una **stored procedure** `create_order(jsonb)` que retor
 ## L02 · Falta validación de rol en acciones críticas (privilege escalation)
 
 - **Severidad:** high
-- **Estado:** open
+- **Estado:** in progress · 2026-04-30
 - **Ubicación:** [src/features/orders/actions.ts:341,409,441](../../src/features/orders/actions.ts#L341)
 
 ### Síntoma observable
@@ -56,12 +56,100 @@ Sustituir `getCurrentStaff()` por `requireStaff({ roles: [...] })` con la matriz
 
 Ya existe el helper, son ~5 líneas por función. **30 minutos.**
 
+### Decisión de implementación · 2026-04-30
+
+**Atacando:** un usuario autenticado con rol `driver` puede invocar
+`approvePayment(orderId)` por Server Action arbitrario (curl con cookie,
+DevTools) y aprobar pagos sin estar autorizado. Mismo problema con
+`assignDriver`, `rejectPayment`, y `transitionOrder` para estados que no
+le competen. Adicionalmente: un driver podría marcar `delivered` un pedido
+asignado a OTRO driver.
+
+**Por qué AHORA:** vulnerabilidad real que afecta integridad financiera y
+operativa. Estamos a un piloto del cliente real; un piloto con drivers
+externos amplifica el riesgo. Costo del fix es bajo (~45 min vs el
+estimado original de 30 min, porque al revisar surgió la constraint
+driver-asignado).
+
+**Compatibilidad con RULES.md:**
+- §1 Layering: ✅ helpers en `features/auth`, callers en `features/orders`. Capas respetadas.
+- §2 RSC default: n/a (Server Actions).
+- §3 Memoización: n/a.
+- §4 Validación en bordes: ✅ alineado — agregar chequeo de rol es validación al inicio del Server Action.
+- §5 Naming: ✅ `assertStaffRole` (verbo imperativo, claro).
+- §6 Pre-delivery: tsc limpio, sin `any`, mensajes de error claros para el toast del cliente.
+
+**Contradice algún hallazgo o ENGRAM:** no. D11 documenta que `requireStaff`
+redirige a `/pedidos`; este fix NO usa `requireStaff` en actions
+precisamente para evitar el redirect y dar feedback estructurado al toast.
+
+**Alternativas descartadas:**
+1. **Usar `requireStaff({ roles })` directamente.** Descartada: tira
+   `redirect()` en Server Actions, lo que navega la página. Para un
+   cajero que toca "Aprobar pago" sin permiso, redirigir a `/pedidos`
+   es UX confusa y silenciosa. Mejor retornar `{ok:false, error}`.
+2. **Wrapper/HOF que envuelva cada action.** Descartada: introduce
+   abstracción para 4 actions y NO expresa bien la matriz fina
+   (driver-asignado, kitchen-restringido a `ready`).
+3. **Validación sólo en RLS de Postgres.** Descartada: las actions usan
+   `supabaseAdmin` (service role) que bypassea RLS. Migrar a `createClient()`
+   server rompe el patrón ya establecido.
+4. **Centralizar en `transitionOrder` y dropear `approvePayment`/`rejectPayment`.**
+   Atractivo pero rompe el API público (los callers tendrían que cambiar).
+   Las dejamos como aliases finos.
+
+**Alcance del cambio:**
+- Nuevo helper `assertStaffRole(roles: StaffRole[])` en
+  [src/features/auth/guards.ts](../../src/features/auth/guards.ts) que
+  retorna `{ok: true, staff} | {ok: false, error}`. ~12 líneas.
+- En [src/features/orders/actions.ts](../../src/features/orders/actions.ts):
+  - `loadOrderState` agrega `driver_id` al SELECT.
+  - `transitionOrder`: matriz de roles por `toStatus` + constraint
+    driver-asignado para `on_the_way`/`delivered` + chequeo de comprobante
+    para `payment_approved` (movido desde `approvePayment`).
+  - `approvePayment`: queda como alias fino (delegando todo a
+    `transitionOrder`).
+  - `rejectPayment`: igual, alias fino.
+  - `assignDriver`: chequeo de rol cashier|admin.
+- Total estimado: ~70 líneas tocadas. No migrations, no env vars,
+  no cambios en UI/copy.
+
+**Matriz de roles final (acordada con stakeholder):**
+
+| Acción | Roles permitidos | Constraint adicional |
+|---|---|---|
+| `approvePayment` (alias) | cashier, admin | comprobante presente |
+| `rejectPayment` (alias) | cashier, admin | — |
+| `assignDriver` | cashier, admin | — |
+| `transitionOrder → preparing` | cashier, kitchen, admin | — |
+| `transitionOrder → ready` | kitchen, cashier, admin | — |
+| `transitionOrder → on_the_way` | driver, cashier, admin | si driver: `driver_id === staff.id` |
+| `transitionOrder → delivered` | driver, cashier, admin | si driver: `driver_id === staff.id` |
+| `transitionOrder → cancelled` | cashier, admin | — |
+| `transitionOrder → payment_approved` | cashier, admin | comprobante presente |
+| `transitionOrder → payment_rejected` | cashier, admin | — |
+| `transitionOrder → new`, `awaiting_payment` | (ninguno) | bloqueado: no son transiciones manuales |
+
+**Nota sobre la superposición admin/cashier sobre `delivered`:** es fallback
+intencional (driver pierde internet, cajero cierra al final del día).
+La auditoría queda en `order_status_events.actor_id` que ya graba quién
+hizo cada transición.
+
+**Cómo se valida que funcionó:**
+- Manual con curl/DevTools: login como driver, llamar `approvePayment`
+  arbitrario → toast con "No tienes permisos para esta acción".
+- Manual: driver A intenta marcar `delivered` un pedido asignado a
+  driver B → toast con "Solo puedes actualizar pedidos asignados a ti".
+- Manual: cajero aprueba pago normal → funciona.
+- `bunx tsc --noEmit` y `bunx vitest run` deben pasar igual que antes
+  del fix.
+
 ---
 
 ## L03 · `uploadPaymentProof` no valida `used_at` del token
 
 - **Severidad:** medium
-- **Estado:** open
+- **Estado:** in progress · 2026-04-30
 - **Ubicación:** [src/features/payments/upload-proof.ts:36-47](../../src/features/payments/upload-proof.ts#L36-L47)
 
 ### Síntoma observable
@@ -87,12 +175,57 @@ if (row.used_at) return { ok: false, error: "Enlace ya usado" };
 ```
 **5 minutos.**
 
+### Decisión de implementación · 2026-04-30
+
+**Atacando:** después de que un cliente confirme un pedido, su
+`order_tokens.used_at` se marca. Pero `uploadPaymentProof` solo valida
+`expires_at`, NO `used_at`. Resultado: con el `orderTokenId` se pueden
+seguir subiendo archivos al bucket `payment-proofs` hasta que el token
+expire (2 horas), generando archivos huérfanos en Storage.
+
+**Por qué AHORA:** fix de 5 minutos, alineado con §4 RULES (validación
+en bordes). Aprovecho que ya estamos en el sprint de seguridad y
+mantenemos el contexto.
+
+**Compatibilidad con RULES.md:**
+- §1 Layering: ✅ borde de Server Action.
+- §2 RSC: n/a.
+- §3 Memoización: n/a.
+- §4 Validación en bordes: ✅ este FIX ES exactamente eso.
+- §5 Naming: ✅ no agrega símbolos nuevos.
+- §6 Pre-delivery: tsc limpio, sin `any`, mensaje claro al cliente.
+
+**Contradice algún hallazgo o ENGRAM:** no.
+
+**Alternativas descartadas:**
+1. **Marcar `used_at` desde el upload (en lugar de createOrder).**
+   Descartada: el upload puede ocurrir antes de confirmar el pedido
+   (camino A). Marcar usado al subir rompe el flujo: si el cliente
+   sube y luego cambia un dato del checkout, no podría re-confirmar.
+   El diseño actual de "2-step token" (ENGRAM 2026-04-16) es correcto;
+   solo falta cerrar el upload una vez consumido.
+2. **Limpiar archivos huérfanos con un job mensual.** Descartada como
+   sustituto: cura el síntoma (basura en Storage) pero deja la
+   vulnerabilidad de upload arbitrario después del consumo. El job
+   sigue siendo deuda válida (ver D08 en LAUNCH_CHECKLIST).
+
+**Alcance del cambio:**
+- 1 archivo, ~3 líneas.
+- [src/features/payments/upload-proof.ts](../../src/features/payments/upload-proof.ts):
+  agregar `used_at` al SELECT y rechazar si no es NULL.
+
+**Cómo se valida que funcionó:**
+- Manual: crear pedido normalmente (consume el token) → recuperar el
+  `orderTokenId` → intentar `uploadPaymentProof` con ese id desde
+  DevTools → esperado `{ok: false, error: "Enlace ya usado"}`.
+- tsc + 37 tests verdes.
+
 ---
 
 ## L04 · `getOrderConfirmation` permite leer cualquier pedido sin autorización
 
 - **Severidad:** medium
-- **Estado:** open
+- **Estado:** in progress · 2026-04-30
 - **Ubicación:** [src/features/orders/queries.ts:28-42](../../src/features/orders/queries.ts#L28-L42)
 
 ### Síntoma observable
@@ -111,13 +244,89 @@ La lógica original asumía que solo el cliente que acabó de comprar accede a `
 ### Fix propuesto
 Pasar también el token al query: `/gracias?id=<orderId>&t=<token>` y validar que el token corresponde al `customer_id` de la orden. Server-side. ~30 minutos. Alternativa más simple: firmar el `orderId` con HMAC y validar en `getOrderConfirmation`.
 
+### Decisión de implementación · 2026-04-30
+
+**Atacando:** la página `/pedir/[token]/gracias?id=<orderId>` invoca
+`getOrderConfirmation(orderId)` con `supabaseAdmin` (bypass de RLS).
+Cualquier persona con un orderId arbitrario (intercepta una URL, lo
+adivina si en el futuro fuera enumerable) puede leer status, total,
+método de pago y `created_at` de un pedido AJENO. Datos del pedido de
+otro cliente.
+
+**Por qué AHORA:** vulnerabilidad de leak de datos. Pequeña en superficie
+(orderId es UUID v4, no enumerable) pero conceptualmente incorrecta y se
+arregla con el token que ya está en la ruta. Mantener el tema de
+seguridad mientras estamos en él.
+
+**Compatibilidad con RULES.md:**
+- §1 Layering: ✅ helper de auth en `features/order-tokens`, query queda
+  en `features/orders`, page consume ambos. Capas respetadas.
+- §2 RSC: ✅ la página `/gracias` es RSC, sigue siéndolo.
+- §3 Memoización: n/a.
+- §4 Validación en bordes: ✅ alineado — query exige el `customerId` que
+  viene del token validado.
+- §5 Naming: nuevo helper `resolveTokenCustomer` (verbo imperativo).
+- §6 Pre-delivery: tsc limpio, sin `any`, sin cambios de UI/copy.
+
+**Contradice algún hallazgo o ENGRAM:** no. ENGRAM 2026-04-16 documenta
+"Token 2-step: verifyToken SOLO lee, createOrder marca used_at". El
+helper nuevo NO modifica nada — solo lee. Coherente con esa decisión.
+
+**Alternativas descartadas:**
+1. **Pasar el token explícitamente como query (`?t=<token>`).**
+   Descartada: el token YA está en la ruta dinámica `[token]`. Duplicar
+   en query string es redundante y agrega superficie.
+2. **Firmar el orderId con HMAC.** Descartada: introduce un secreto
+   nuevo y un patrón distinto al de tokens. Mantener UN solo patrón
+   (HMAC sobre `order_tokens`) es más mantenible.
+3. **Migrar la query a `createClient()` server con RLS.** Descartada:
+   el cliente NO está autenticado en `/gracias`. RLS no aplica para
+   anon en `orders`; las policies actuales bloquearían la lectura.
+4. **Reusar `verifyToken`.** Descartada: ese helper rechaza tokens
+   `used`, pero el flujo normal es entrar a `/gracias` JUSTO después
+   de crear el pedido (token ya `used`). Falsearía la mayoría de
+   accesos legítimos.
+5. **Reusar `getCustomerIdFromExpiredToken`.** Descartada: ese helper
+   rechaza con `still_valid` cuando el token NO está expirado ni usado
+   (raro pero posible si el cliente comparte la URL antes de confirmar).
+   Necesitamos un resolutor neutral.
+
+**Alcance del cambio:**
+- Nuevo helper `resolveTokenCustomer(token)` en
+  [src/features/order-tokens/verify.ts](../../src/features/order-tokens/verify.ts).
+  Acepta tokens válidos / usados / expirados con firma HMAC correcta.
+  Solo retorna `customerId`. ~30 líneas (mucha es boilerplate de HMAC
+  duplicado de los otros helpers — ver D-nuevo abajo).
+- Tipo `ResolveTokenCustomerResult` en `order-tokens/schemas.ts`.
+- [src/features/orders/queries.ts](../../src/features/orders/queries.ts):
+  `getOrderConfirmation(orderId, expectedCustomerId)` agrega segundo
+  parámetro y filtra `.eq("customer_id", expectedCustomerId)`. Si no
+  matchea, retorna null.
+- [app/(shop)/pedir/[token]/gracias/page.tsx](../../app/(shop)/pedir/[token]/gracias/page.tsx):
+  resolver token → `customerId`; pasar a `getOrderConfirmation`. Si
+  cualquiera falla, mostrar el branch de "No encontramos tu pedido".
+- Total: ~50 líneas, 4 archivos. No migrations.
+
+**Nueva deuda generada:** abro **D12** en deuda-tecnica.md — los 3
+helpers de tokens (`verifyToken`, `getCustomerIdFromExpiredToken`,
+`resolveTokenCustomer`) duplican lógica HMAC y lookup. Refactorizar a
+una función base `resolveTokenWithStatus` con wrappers delgados. ~1h.
+No urgente (el fix de L04 funciona sin esto), pero registrado.
+
+**Cómo se valida que funcionó:**
+- Manual: cliente A crea pedido, copia URL `/gracias?id=<idA>` → cliente
+  B (otro teléfono = otro token) abre URL pegando su propio token y
+  con el `id` de A → esperado: branch "No encontramos tu pedido".
+- Manual: cliente A normal → ve su `/gracias` correctamente.
+- tsc + 37 tests verdes.
+
 ---
 
 ## L05 · Realtime del panel no maneja expiración de sesión
 
 - **Severidad:** medium
-- **Estado:** open
-- **Ubicación:** [src/components/dashboard/orders-board.tsx:73-89](../../src/components/dashboard/orders-board.tsx#L73)
+- **Estado:** in progress · 2026-04-30
+- **Ubicación:** [src/components/dashboard/orders-board.tsx:73-89](../../src/components/dashboard/orders-board.tsx#L73), [src/components/dashboard/driver-orders-list.tsx](../../src/components/dashboard/driver-orders-list.tsx)
 
 ### Síntoma observable
 El panel del cajero se monta una sola vez al cargar y suscribe a `postgres_changes` con el `access_token` de ese momento. Si la sesión expira durante la jornada (8+ horas con la pestaña abierta), Supabase Realtime sigue conectado al canal, pero la auth queda stale: las policies RLS ya no autorizan los eventos y **dejan de llegar silenciosamente**. No hay error visible — el cajero piensa que no hay pedidos nuevos cuando sí los hay.
@@ -133,6 +342,83 @@ El `useEffect` solo hace `setAuth` en el mount inicial. No hay listener de `onAu
 
 ### Fix propuesto
 Agregar listener `onAuthStateChange` que llame `setAuth` con el nuevo `access_token` cuando Supabase haga refresh. Si la sesión expira completamente, redirigir a `/login`. ~1h.
+
+### Decisión de implementación · 2026-04-30
+
+**Atacando dos problemas del mismo origen:**
+1. [orders-board.tsx](../../src/components/dashboard/orders-board.tsx) hace
+   `setAuth(access_token)` solo en el mount. Si Supabase refresca el token
+   automáticamente durante un turno largo (5-10h), Realtime queda con
+   el token viejo; las RLS empiezan a filtrar los eventos silenciosamente.
+2. [driver-orders-list.tsx](../../src/components/dashboard/driver-orders-list.tsx)
+   ni siquiera hace `setAuth` inicial. Funciona "por suerte" porque las
+   policies de Realtime se evaluan con anon en algunos casos, pero
+   pueden fallar a la primera RLS estricta.
+
+**Por qué AHORA:** estamos por arrancar piloto con cliente real (turnos
+largos). ENGRAM 2026-04-20 lo dejó como deuda preventiva con la nota
+"se prueba menos, conviene aplicar el mismo fix la próxima vez que se
+toque". Esta es esa próxima vez.
+
+**Compatibilidad con RULES.md:**
+- §1 Layering: ✅ helper en `src/lib/supabase/`, callers en
+  `src/components/dashboard/`. Capas respetadas.
+- §2 RSC: n/a (los archivos son `"use client"` por necesidad — Realtime
+  sólo funciona en cliente).
+- §3 Memoización: n/a — no se introduce `useMemo`/`useCallback`.
+- §4 Validación en bordes: n/a (no es input validation).
+- §5 Naming: nuevo helper `attachRealtimeAuthSync` — verbo imperativo,
+  describe efecto.
+- §6 Pre-delivery: tsc limpio, sin `any`, mobile-first preservado.
+
+**Tensión con ENGRAM 2026-04-20 — explícita:** esa entrada dijo "No usar
+`onAuthStateChange` para resuscribir: manejar refresh-token es
+complicación innecesaria". El razonamiento era que la sesión ya existe
+al montar. Pero el problema de hoy NO es "re-suscribir el canal", es
+**propagar el nuevo `access_token` a Realtime cuando Supabase lo
+refresca**. La suscripción del canal se mantiene viva; solo cambia el
+token que la autoriza. ENGRAM 2026-04-20 se interpretó demasiado
+literal — se prohibió `onAuthStateChange` por temor a complicaciones
+de re-suscribir, no por una razón fundamental. Este fix usa
+`onAuthStateChange` SOLO para llamar `realtime.setAuth(newToken)`, que
+es justamente lo que evita las complicaciones que ENGRAM temía.
+
+**Alternativas descartadas:**
+1. **Refrescar manualmente con `setInterval` cada 50 min.** Descartada:
+   stateful, costoso, redundante con el refresh nativo de Supabase. Más
+   código que `onAuthStateChange`.
+2. **Solo arreglar `orders-board.tsx`, dejar `driver-orders-list.tsx`
+   como está.** Descartada: misma vulnerabilidad, solo difiere en visibilidad.
+   El piloto va a tener drivers reales, no es responsable dejar uno solo.
+3. **Resuscribir el canal completo en cada `TOKEN_REFRESHED`.** Descartada:
+   más caro, más complejo, y exactamente lo que ENGRAM 2026-04-20 quería
+   evitar.
+4. **Migrar a Supabase RLS-relaxed para Realtime y simplificar.**
+   Descartada: rebajaría seguridad. RLS estricto es la postura correcta
+   para v1.
+
+**Alcance del cambio:**
+- Nuevo helper [src/lib/supabase/realtime-auth.ts](../../src/lib/supabase/realtime-auth.ts):
+  función imperativa `attachRealtimeAuthSync(supabase)` que (a) hace
+  `setAuth` inicial con la sesión actual, (b) suscribe a
+  `onAuthStateChange` para llamar `setAuth(newToken)` en cada refresh,
+  y (c) retorna un cleanup `() => void` para el unmount. ~30 líneas.
+- [src/components/dashboard/orders-board.tsx](../../src/components/dashboard/orders-board.tsx):
+  reemplazar el setAuth manual por una llamada al helper. Cleanup
+  agregado al return del useEffect.
+- [src/components/dashboard/driver-orders-list.tsx](../../src/components/dashboard/driver-orders-list.tsx):
+  agregar la llamada al helper (no la tiene hoy).
+- Total: ~30 líneas nuevas + ~10 modificadas, 3 archivos. No migrations,
+  no env vars, no cambios de UI.
+
+**Cómo se valida que funcionó:**
+- Manual con sesión corta forzada: en Supabase Studio → Auth → Settings
+  bajar JWT expiry a 60 segundos. Login en panel → esperar 90s → crear
+  pedido nuevo desde otra pestaña → esperado: panel refresca el card
+  igual que antes. Sin el fix: panel queda dormido.
+- `bunx tsc --noEmit` y `bunx vitest run` siguen verdes.
+- Smoke: el panel del cajero arranca igual que antes (no hay regresión
+  en el caso happy de sesión recién montada).
 
 ---
 

@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
-import { getCurrentStaff } from "@/features/auth/queries";
+import { assertStaffRole } from "@/features/auth/guards";
+import type { StaffRole } from "@/features/auth/queries";
 import { SIZE_ORDER, type PizzaSize } from "@/features/catalog/types";
 import { markTokenUsed } from "@/features/order-tokens/mark-used";
 import { verifyToken } from "@/features/order-tokens/verify";
@@ -321,35 +322,80 @@ interface OrderStateRow {
   status: OrderStatus;
   needs_proof: boolean;
   payment_proof_url: string | null;
+  driver_id: string | null;
 }
 
 async function loadOrderState(orderId: string): Promise<OrderStateRow | null> {
   const { data, error } = await supabaseAdmin
     .from("orders")
-    .select("status, needs_proof, payment_proof_url")
+    .select("status, needs_proof, payment_proof_url, driver_id")
     .eq("id", orderId)
     .maybeSingle();
   if (error) throw error;
   return (data as OrderStateRow | null) ?? null;
 }
 
+// Matriz de roles autorizados por estado destino para `transitionOrder`.
+// Estados con array vacío están bloqueados como transición manual
+// (e.g. `new`/`awaiting_payment` se setean al crear el pedido).
+const TRANSITION_ROLE_MATRIX: Record<OrderStatus, StaffRole[]> = {
+  new: [],
+  awaiting_payment: [],
+  payment_approved: ["cashier", "admin"],
+  payment_rejected: ["cashier", "admin"],
+  preparing: ["cashier", "kitchen", "admin"],
+  ready: ["kitchen", "cashier", "admin"],
+  on_the_way: ["driver", "cashier", "admin"],
+  delivered: ["driver", "cashier", "admin"],
+  cancelled: ["cashier", "admin"],
+};
+
 export async function transitionOrder(input: {
   orderId: string;
   toStatus: OrderStatus;
   reason?: string;
 }): Promise<SimpleResult> {
-  const staff = await getCurrentStaff();
-  if (!staff) return { ok: false, error: "No autorizado" };
-
   const parsed = transitionOrderInputSchema.safeParse(input);
   if (!parsed.success) {
     return { ok: false, error: "Datos inválidos" };
   }
   const { orderId, toStatus } = parsed.data;
 
+  // Autorización por matriz de roles (L02 — ver docs/audit/logica.md).
+  const allowedRoles = TRANSITION_ROLE_MATRIX[toStatus];
+  if (allowedRoles.length === 0) {
+    return { ok: false, error: "Esta transición no se hace manualmente" };
+  }
+  const auth = await assertStaffRole(allowedRoles);
+  if (!auth.ok) return { ok: false, error: auth.error };
+  const { staff } = auth;
+
   try {
     const current = await loadOrderState(orderId);
     if (!current) return { ok: false, error: "Pedido no encontrado" };
+
+    // Driver solo puede transicionar pedidos asignados a él. La UI ya
+    // filtra `/mensajero` por driver, pero la Server Action es endpoint
+    // público y puede llamarse directamente bypassando la UI.
+    if (
+      staff.role === "driver" &&
+      (toStatus === "on_the_way" || toStatus === "delivered") &&
+      current.driver_id !== staff.id
+    ) {
+      return {
+        ok: false,
+        error: "Solo puedes actualizar pedidos asignados a ti",
+      };
+    }
+
+    // Comprobante obligatorio antes de aprobar pago. Movido aquí desde
+    // `approvePayment` para que la guardia aplique aunque alguien llame
+    // `transitionOrder` directo con `toStatus = "payment_approved"`.
+    if (toStatus === "payment_approved") {
+      if (current.needs_proof || !current.payment_proof_url) {
+        return { ok: false, error: "Falta el comprobante" };
+      }
+    }
 
     if (!canTransition(current.status, toStatus)) {
       return { ok: false, error: "Transición inválida" };
@@ -405,21 +451,10 @@ export async function transitionOrder(input: {
   }
 }
 
+// Aliases finos para mantener el API público. Toda la autorización y
+// validación del comprobante vive en `transitionOrder` para que no se
+// pueda saltar llamando la action directa.
 export async function approvePayment(orderId: string): Promise<SimpleResult> {
-  const staff = await getCurrentStaff();
-  if (!staff) return { ok: false, error: "No autorizado" };
-
-  try {
-    const current = await loadOrderState(orderId);
-    if (!current) return { ok: false, error: "Pedido no encontrado" };
-    if (current.needs_proof || !current.payment_proof_url) {
-      return { ok: false, error: "Falta el comprobante" };
-    }
-  } catch (err) {
-    console.error("approvePayment precheck failed", err);
-    return { ok: false, error: "No pudimos validar el pedido." };
-  }
-
   return transitionOrder({ orderId, toStatus: "payment_approved" });
 }
 
@@ -438,8 +473,8 @@ export async function assignDriver(input: {
   orderId: string;
   driverId: string | null;
 }): Promise<SimpleResult> {
-  const staff = await getCurrentStaff();
-  if (!staff) return { ok: false, error: "No autorizado" };
+  const auth = await assertStaffRole(["cashier", "admin"]);
+  if (!auth.ok) return { ok: false, error: auth.error };
 
   const parsed = assignDriverInputSchema.safeParse(input);
   if (!parsed.success) {

@@ -191,6 +191,42 @@ Si esto se olvida, el sistema corre OK pero F8 (alerta de retraso) y proof remin
 
 ---
 
+## D12 · Tres helpers de tokens duplican lógica HMAC + lookup
+
+- **Severidad:** low
+- **Estado:** open
+- **Ubicación:** [src/features/order-tokens/verify.ts](../../src/features/order-tokens/verify.ts)
+
+### Análisis
+Hay tres helpers que comparten la mayor parte del código:
+- `verifyToken(token)` — acepta solo tokens vivos (no expirados, no usados)
+- `getCustomerIdFromExpiredToken(token)` — acepta solo expirados o usados
+- `resolveTokenCustomer(token)` — acepta cualquier estado (introducido en
+  el fix de L04)
+
+Cada uno repite: parsing del formato `id.iat.sig`, verificación HMAC con
+`timingSafeEqual`, lookup por `token_hash`. Solo difieren en el filtro
+final de estado.
+
+### Fix propuesto
+Refactorizar a un único helper base `resolveTokenWithStatus(token)` que
+retorne `{ok, customerId, tokenId, status: "valid"|"expired"|"used"}`,
+y mantener los 3 actuales como wrappers delgados que filtran por status.
+
+```ts
+// resolveTokenWithStatus → fuente única
+// verifyToken → wrapper que rechaza !valid
+// getCustomerIdFromExpiredToken → wrapper que rechaza valid
+// resolveTokenCustomer → wrapper que acepta todo
+```
+
+~1h. Sin tests para los wrappers (cubierto por tests del base).
+
+**Cuándo:** no urgente. Hacerlo cuando se vuelva a tocar `verify.ts` por
+cualquier motivo (ej. agregar `nbf` o expandir el formato del token).
+
+---
+
 ## D11 · `requireStaff()` redirige a `/pedidos` cuando el rol no aplica (no hay /403)
 
 - **Severidad:** low

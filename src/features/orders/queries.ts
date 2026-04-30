@@ -25,8 +25,12 @@ export interface OrderConfirmation {
   created_at: string;
 }
 
+// `expectedCustomerId` viene del token de la ruta. Si el orderId
+// pertenece a otro cliente, retornamos null para que la página muestre
+// "no encontramos tu pedido" en lugar de filtrar datos ajenos. Ver L04.
 export async function getOrderConfirmation(
   orderId: string,
+  expectedCustomerId: string,
 ): Promise<OrderConfirmation | null> {
   const { data, error } = await supabaseAdmin
     .from("orders")
@@ -34,6 +38,7 @@ export async function getOrderConfirmation(
       "id, status, total_cents, payment_method, needs_proof, created_at",
     )
     .eq("id", orderId)
+    .eq("customer_id", expectedCustomerId)
     .maybeSingle();
 
   if (error) throw error;

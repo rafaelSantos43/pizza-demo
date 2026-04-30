@@ -35,15 +35,25 @@ export async function uploadPaymentProof(
   try {
     const { data: tokenRow, error: tokenErr } = await supabaseAdmin
       .from("order_tokens")
-      .select("id, expires_at")
+      .select("id, expires_at, used_at")
       .eq("id", orderTokenId)
       .maybeSingle();
     if (tokenErr) throw tokenErr;
     if (!tokenRow) return { ok: false, error: "Enlace no encontrado" };
 
-    const row = tokenRow as { id: string; expires_at: string };
+    const row = tokenRow as {
+      id: string;
+      expires_at: string;
+      used_at: string | null;
+    };
     if (new Date(row.expires_at).getTime() < Date.now()) {
       return { ok: false, error: "El enlace expiró" };
+    }
+    // L02-L03: token consumido por createOrder no puede aceptar más uploads;
+    // de lo contrario se acumulan archivos huérfanos en Storage que nunca
+    // quedan asociados a un pedido.
+    if (row.used_at) {
+      return { ok: false, error: "Enlace ya usado" };
     }
 
     const mime = file.type as AllowedProofMime;

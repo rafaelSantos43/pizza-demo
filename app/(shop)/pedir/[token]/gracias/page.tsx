@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
+import { resolveTokenCustomer } from "@/features/order-tokens/verify";
 import { getOrderConfirmation } from "@/features/orders/queries";
 import type { OrderStatus, PaymentMethod } from "@/features/orders/types";
 import { formatCop } from "@/lib/format";
@@ -48,7 +49,14 @@ export default async function GraciasPage({
     redirect(`/pedir/${token}`);
   }
 
-  const order = await getOrderConfirmation(id);
+  // L04: el orderId viene como query string público. Resolvemos el
+  // customer_id desde el token de la ruta y exigimos que el pedido
+  // pertenezca a ese cliente. Sin esto, cualquier orderId arbitrario
+  // expondría status/total/método de pago de pedidos ajenos.
+  const tokenCustomer = await resolveTokenCustomer(token);
+  const order = tokenCustomer.ok
+    ? await getOrderConfirmation(id, tokenCustomer.customerId)
+    : null;
 
   if (!order) {
     return (

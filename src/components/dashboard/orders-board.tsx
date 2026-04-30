@@ -10,6 +10,7 @@ import { OrderDetailSheet } from "@/components/dashboard/order-detail";
 import type { ActiveDriver, CurrentStaff } from "@/features/auth/queries";
 import type { OrderSummary } from "@/features/orders/types";
 import { createClient } from "@/lib/supabase/client";
+import { attachRealtimeAuthSync } from "@/lib/supabase/realtime-auth";
 
 const ALERTING_STATUSES = new Set(["new", "awaiting_payment"]);
 
@@ -71,14 +72,16 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
 
   useEffect(() => {
     const supabase = createClient();
+    // Mantiene `realtime.setAuth` sincronizado con la sesión, incluyendo
+    // refreshes de token durante turnos largos. Ver L05.
+    const detachAuthSync = attachRealtimeAuthSync(supabase);
     let channel: ReturnType<typeof supabase.channel> | null = null;
     let cancelled = false;
 
     (async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session) await supabase.realtime.setAuth(session.access_token);
+      // Pequeño microtask para garantizar que el setAuth inicial del
+      // helper se haya enviado antes de subscribirse al canal.
+      await Promise.resolve();
       if (cancelled) return;
 
       channel = supabase
@@ -138,6 +141,7 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
 
     return () => {
       cancelled = true;
+      detachAuthSync();
       if (channel) supabase.removeChannel(channel);
     };
   }, [router]);

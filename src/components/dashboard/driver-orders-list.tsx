@@ -8,6 +8,7 @@ import { DriverOrderCard } from "@/components/dashboard/driver-order-card";
 import type { StaffRole } from "@/features/auth/queries";
 import type { OrderSummary } from "@/features/orders/types";
 import { createClient } from "@/lib/supabase/client";
+import { attachRealtimeAuthSync } from "@/lib/supabase/realtime-auth";
 
 interface DriverOrdersListProps {
   initial: OrderSummary[];
@@ -24,6 +25,9 @@ export function DriverOrdersList({
 
   useEffect(() => {
     const supabase = createClient();
+    // Mantiene `realtime.setAuth` sincronizado con la sesión, incluyendo
+    // refreshes de token durante turnos largos. Ver L05.
+    const detachAuthSync = attachRealtimeAuthSync(supabase);
     const channel = supabase
       .channel("driver-orders-feed")
       .on(
@@ -38,6 +42,7 @@ export function DriverOrdersList({
       .subscribe();
 
     return () => {
+      detachAuthSync();
       supabase.removeChannel(channel);
     };
   }, [router]);
