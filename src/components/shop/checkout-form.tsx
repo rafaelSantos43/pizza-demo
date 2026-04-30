@@ -1,7 +1,17 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowLeft, Building, Building2, Home, Info, Loader2, X } from "lucide-react";
+import {
+  ArrowLeft,
+  Building,
+  Building2,
+  Home,
+  Info,
+  Loader2,
+  MessageCircle,
+  Upload,
+  X,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -29,6 +39,8 @@ import { uploadProofByToken } from "@/features/cart/upload-proof-by-token";
 import { compressImage } from "@/lib/compress-image";
 import { formatCop } from "@/lib/format";
 import { cn } from "@/lib/utils";
+
+// ─── Constantes y schemas ───────────────────────────────────────────
 
 const PAYMENT_METHODS = ["cash", "bancolombia", "nequi", "llave"] as const;
 
@@ -72,6 +84,8 @@ interface CheckoutFormProps {
   settings: Settings;
 }
 
+// ─── Componente: estado, handlers, submit ───────────────────────────
+
 export function CheckoutForm({ token, settings }: CheckoutFormProps) {
   const router = useRouter();
   const [cart, setCart] = useState<CartItem[] | null>(null);
@@ -99,6 +113,8 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
       references: "",
       paymentMethod: "cash",
       notes: "",
+      // schema fuerza true en submit; el form arranca en false. El cast
+      // satisface el tipo literal sin mentirle al usuario en runtime.
       acceptedPolicies: false as unknown as true,
     },
   });
@@ -108,6 +124,8 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
   const housingType = watch("housingType");
   const needsProof = paymentMethod !== "cash";
 
+  // Limpia campos que no aplican al tipo nuevo para no enviar datos
+  // residuales (ej. "torre" cuando ya es casa).
   function handleHousingChange(next: HousingType) {
     setValue("housingType", next);
     if (next === "casa") {
@@ -150,6 +168,7 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
     setProofFile(file);
   }
 
+  // ─── Submit: comprobante (si aplica) → createOrder → redirect ─────
   async function onSubmit(values: CheckoutFormValues) {
     if (cartItems.length === 0) {
       toast.error("Tu carrito está vacío");
@@ -232,6 +251,7 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
     );
   }
 
+  // ─── Render ───────────────────────────────────────────────────────
   return (
     <div className="flex min-h-dvh flex-col bg-background">
       <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-border bg-background/95 px-4 py-3 backdrop-blur md:px-6">
@@ -317,6 +337,7 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
             </CardContent>
           </Card>
 
+          {/* ─── Sección: Dirección estructurada (formato Colombia) ─── */}
           <Card>
             <CardHeader>
               <CardTitle className="font-serif text-lg">
@@ -427,6 +448,7 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
             </CardContent>
           </Card>
 
+          {/* ─── Sección: Método de pago + comprobante (camino A) ─── */}
           <Card>
             <CardHeader>
               <CardTitle className="font-serif text-lg">
@@ -487,29 +509,73 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
                     </ul>
                   </div>
 
-                  <div>
-                    <Label htmlFor="proofFile">Comprobante de pago</Label>
+                  <div className="space-y-3">
+                    <Label
+                      htmlFor="proofFile"
+                      className="text-base font-medium text-foreground"
+                    >
+                      Comprobante de pago
+                    </Label>
+
+                    <label
+                      htmlFor="proofFile"
+                      className={cn(
+                        "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-6 text-center transition-colors",
+                        proofFile
+                          ? "border-primary/60 bg-primary/5"
+                          : "border-border hover:border-primary/50 hover:bg-muted/40",
+                      )}
+                    >
+                      <Upload
+                        className={cn(
+                          "size-6",
+                          proofFile ? "text-primary" : "text-muted-foreground",
+                        )}
+                        aria-hidden
+                      />
+                      {proofFile ? (
+                        <>
+                          <p className="text-sm font-medium text-foreground">
+                            {proofFile.name}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {Math.round(proofFile.size / 1024)} KB · toca para
+                            cambiar
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-sm font-medium text-foreground">
+                            Sube aquí tu comprobante
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            JPG, PNG o WEBP — máx 5 MB
+                          </p>
+                        </>
+                      )}
+                    </label>
                     <Input
                       id="proofFile"
                       type="file"
                       accept="image/jpeg,image/png,image/webp"
                       onChange={handleProofChange}
-                      className="mt-1"
+                      className="sr-only"
                     />
-                    {proofFile ? (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {proofFile.name} ·{" "}
-                        {Math.round(proofFile.size / 1024)} KB
-                      </p>
-                    ) : null}
+
                     {proofError ? (
-                      <p className="mt-1 text-sm text-destructive">
-                        {proofError}
-                      </p>
+                      <p className="text-sm text-destructive">{proofError}</p>
                     ) : null}
-                    <p className="mt-2 text-sm text-foreground/80">
-                      Sube tu comprobante aquí o envíalo por WhatsApp.
-                    </p>
+
+                    <div className="flex items-start gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                      <MessageCircle
+                        className="mt-0.5 size-3.5 shrink-0"
+                        aria-hidden
+                      />
+                      <span>
+                        ¿Prefieres no subirlo aquí? También puedes enviarlo por
+                        WhatsApp después de confirmar.
+                      </span>
+                    </div>
                   </div>
                 </div>
               ) : null}
@@ -573,6 +639,7 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
           </Button>
         </div>
 
+        {/* ─── Footer fijo: total + CTA confirmar (mobile-first) ─── */}
         <div
           className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 px-4 pt-3 pb-4 backdrop-blur md:px-6"
           style={{

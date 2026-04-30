@@ -19,6 +19,8 @@ import type { CartFlavor, CartItem } from "@/features/cart/types";
 import { cn } from "@/lib/utils";
 import { formatCop } from "@/lib/format";
 
+// ─── Tipos y helpers de precio/tamaño ──────────────────────────────
+
 interface PizzaBuilderProps {
   product: Product;
   allProducts: Product[];
@@ -32,6 +34,8 @@ function sizeIsAtLeast(size: PizzaSize, min: PizzaSize): boolean {
 function priceForFlavor(p: Product, size: PizzaSize): number | null {
   return p.sizes.find((s) => s.size === size)?.price_cents ?? null;
 }
+
+// ─── Componente: estado del builder y cálculo de precio ────────────
 
 export function PizzaBuilder({
   product,
@@ -73,6 +77,9 @@ export function PizzaBuilder({
 
   const someFlavorMissingSize = flavorPricesAtSize.some((p) => p === null);
 
+  // Mitad y mitad: el precio del item es el MÁS ALTO entre el base y
+  // los sabores combinados. El cliente ve la regla en el resumen del
+  // checkout. Backend recalcula igual con precios de DB.
   const unitPrice: number | null =
     basePrice === null
       ? null
@@ -121,6 +128,7 @@ export function PizzaBuilder({
 
   const cannotAdd = !selectedSize || unitPrice === null;
 
+  // ─── Render ───────────────────────────────────────────────────────
   return (
     <div className="flex h-full flex-col">
       <div className="relative h-[32dvh] w-full shrink-0 bg-muted md:h-56">

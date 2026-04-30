@@ -16,7 +16,7 @@ El restaurante vende 100% por WhatsApp y **tiene sus propios domiciliarios**. Fu
 **No cambiamos cómo vende.** Construimos una capa mínima detrás de WhatsApp:
 1. El cliente llega por WhatsApp y recibe un link al catálogo.
 2. El pedido se arma en el catálogo web (estructurado, sin texto libre).
-3. El pedido aparece en pantalla de cocina + **se imprime en ticketera**.
+3. El pedido aparece en el panel del cajero con **alerta sonora + toast persistente**.
 4. El domiciliario ve en su móvil qué pedido llevar.
 5. Los cambios de estado disparan avisos automáticos por WhatsApp.
 
@@ -72,7 +72,7 @@ Métricas que vamos a medir desde el día 1:
 |-----|-------------|-----------------|
 | **Admin / Dueño** | Desktop o laptop | No ve el negocio, decide a ciegas |
 | **Cajero/operador** | Tablet o laptop en mostrador | Escribe 100 mensajes al día |
-| **Cocinero** | Tablet en cocina **+ ticket impreso** | No sabe qué hacer primero |
+| **Cocinero** | El cajero canta o anota el pedido a mano | No sabe qué hacer primero |
 | **Domiciliario (propio)** | Móvil personal | Sale sin ruta clara, vuelve a preguntar |
 | **Cliente final** | WhatsApp + link al catálogo móvil | Escribe pedido, pregunta mil veces el estado |
 
@@ -129,7 +129,7 @@ Ruta `/pedir/[token]`:
 - Mobile-first, Tailwind v4
 
 ### F3 — Panel único de pedidos (cajero + cocina comparten)
-Lista en tiempo real (Supabase Realtime) con filtro por estado. **El cajero y la cocina usan el mismo panel** — el ticket impreso ya resuelve la lectura en cocina, no hace falta una vista aparte.
+Lista en tiempo real (Supabase Realtime) con filtro por estado. **El cajero y la cocina usan el mismo panel** — el cajero canta el pedido a cocina (o lo escribe a mano como ya lo hacen) cuando lo recibe; el panel es la fuente de verdad digital.
 
 - **Nuevo → Esperando pago → Pago aprobado → En preparación → Listo → En camino → Entregado**
 - Cada pedido muestra: cliente, productos con tamaño/sabores, dirección completa, hora, ETA, método de pago
@@ -139,13 +139,16 @@ Lista en tiempo real (Supabase Realtime) con filtro por estado. **El cajero y la
 - Alerta visual (badge rojo) si superó el ETA por más de 10 min
 - Si más adelante piden pantalla dedicada de cocina, se agrega en v1.1 (~1 día)
 
-### F4 — Ticket impreso en cocina
-Cada pedido nuevo **se imprime automáticamente** en la ticketera de cocina:
-- Productos, modificadores, notas del cliente
-- Número de pedido + hora
-- Dirección (para el domiciliario)
+### F4 — Alerta sonora + visual de pedido nuevo (reemplaza el ticket impreso)
+Cuando un pedido entra al panel en estado `new` o `awaiting_payment`:
+- **Beep audible** (Web Audio API, ~350ms a 880Hz) para que el cajero se entere aunque no esté mirando la pantalla
+- **Toast persistente** (no se descarta solo) con monto y botón "Visto"
+- El toast **se descarta automáticamente** cuando el cajero avanza el pedido a otro estado (`preparing`, etc.) — un solo gesto
+- El cajero canta o anota el pedido a mano para cocina
 
-Implementación: impresora térmica compatible con **ESC/POS vía red** o **QZ Tray / PrintNode** desde el panel.
+> El audio en navegadores requiere primer gesto del usuario (autoplay policy). El AudioContext se desbloquea con el primer click/tap; mientras tanto el toast persistente sirve de respaldo.
+>
+> **Importante para capacitación:** la tablet/PC del mostrador debe tener el volumen subido. El staff es responsable de verificar que el sonido funciona al iniciar el turno.
 
 ### F5 — Vista móvil del domiciliario
 Ruta `/mensajero` (login propio, rol `driver`):
@@ -209,7 +212,7 @@ El comprobante puede llegar por **dos caminos**, el sistema los unifica:
 **Validación manual (igual en ambos casos):**
 1. Cajero ve la miniatura del comprobante en el detalle del pedido
 2. Dos botones: **"Aprobar pago"** / **"Rechazar comprobante"**
-3. Al aprobar → estado `payment_approved` → WhatsApp automático + ticket imprime
+3. Al aprobar → estado `payment_approved` → WhatsApp automático al cliente
 4. Al rechazar → estado `payment_rejected` → WhatsApp automático al cliente pidiendo nuevo comprobante (puede reenviar por cualquiera de los 2 caminos)
 
 ---
@@ -269,20 +272,16 @@ bun add -d vitest @playwright/test
 - ❌ Sentry en v1 (logs de Vercel + Supabase bastan al principio; agregar si hay bugs difíciles)
 - ❌ Biome (ESLint ya está, no cambiar lo que funciona)
 
-### 7.3 Integración de impresora
+### 7.3 Sin integración de impresora (decisión 2026-04-30)
 
-Dos opciones realistas, elegir según la ticketera:
+El MVP **no integra ticketera ni PrintNode ni ESC/POS**. El panel del cajero (F3) con alerta sonora + toast persistente (F4) reemplaza al ticket de papel.
 
-**Opción A — PrintNode (recomendada, $5/mes):**
-- Agente en la máquina de cocina
-- API HTTP desde el backend
-- Funciona con 99% de impresoras térmicas
+**Por qué se quitó:**
+- Hardware = punto de falla (Wi-Fi caído, papel acabado, driver desconfigurado, impresora china rara)
+- Soporte se complica: cada local con un modelo distinto
+- "Cero inversión en hardware" es una ventaja comercial real al hablarle al dueño
 
-**Opción B — Impresora de red ESC/POS:**
-- Solo si la ticketera tiene IP y está en la misma red Wi-Fi
-- Gratis pero frágil (Wi-Fi se cae = no imprime)
-
-Decisión a validar la **primera semana** viendo qué ticketera tiene el restaurante.
+**Si en el futuro un cliente lo pide explícitamente** (ej. local muy ruidoso o cocina sin tablet propia), se reabre como feature opcional con PrintNode. Diseño documentado pero no construido.
 
 ---
 
@@ -294,8 +293,7 @@ Decisión a validar la **primera semana** viendo qué ticketera tiene el restaur
 | Supabase | Free tier | $0 |
 | Dominio | `.com` anual | ~$1/mes |
 | WhatsApp Cloud API | 1k conversaciones gratis | $0 (si <1k/mes) |
-| PrintNode (si aplica) | Básico | $5 |
-| **Total mes 1-3** | | **~$6/mes** |
+| **Total mes 1-3** | | **~$1/mes** |
 
 **Cuando haya que subir a planes pagos:**
 - Supabase Pro $25/mes (cuando pase tier free, necesite backups diarios, o Storage supere 1 GB por comprobantes)
@@ -337,11 +335,6 @@ Decisión a validar la **primera semana** viendo qué ticketera tiene el restaur
        │         ┌──────────────────────▼──────────────────┐
        ◀─plantilla│   Notificación WhatsApp (salida)        │
                  └──────────────────────────────────────────┘
-
-                 ┌──────────────────────┐
-                 │ PrintNode (opcional) │◀─── nueva orden
-                 │ → Ticket impreso     │
-                 └──────────────────────┘
 ```
 
 ### 9.2 Flujo de un pedido
@@ -376,11 +369,10 @@ Decisión a validar la **primera semana** viendo qué ticketera tiene el restaur
     - estado inicial:
         · efectivo        → status='preparing' (salta validación)
         · transferencia   → status='awaiting_payment'
-    - si preparing: llama PrintNode → imprime ticket
-    - trigger realtime → panel actualizado
+    - trigger realtime → panel actualizado (beep + toast persistente)
  6. (Si awaiting_payment) Cajero revisa comprobante:
     - "Aprobar pago" → status='payment_approved'
-      → imprime ticket, notifica al cliente
+      → notifica al cliente
     - "Rechazar"    → status='payment_rejected'
       → pide nuevo comprobante al cliente
  7. Cocina toca "Listo" cuando está hecho
@@ -562,8 +554,7 @@ pizza-demo/
 │   │   └── settings/page.tsx
 │   ├── login/page.tsx                    # Solo staff
 │   ├── api/
-│   │   ├── webhooks/whatsapp/route.ts    # Recibe mensajes Y comprobantes (imágenes)
-│   │   └── print/[orderId]/route.ts      # Dispara PrintNode
+│   │   └── webhooks/whatsapp/route.ts    # Recibe mensajes Y comprobantes (imágenes)
 │   ├── layout.tsx
 │   └── page.tsx
 │
@@ -577,8 +568,7 @@ pizza-demo/
 │   │   ├── whatsapp/                     # greet, sender, templates, verify-signature
 │   │   ├── order-tokens/                 # sign, verify
 │   │   ├── payments/                     # upload comprobante, validar, estados
-│   │   ├── delay-alerts/                 # lógica que corre desde pg_cron
-│   │   └── printing/                     # printnode client
+│   │   └── delay-alerts/                 # lógica que corre desde pg_cron
 │   ├── lib/
 │   │   ├── supabase/                     # client, server, admin
 │   │   ├── env.ts                        # Zod validated
@@ -655,11 +645,11 @@ Todo el diseño **100% con Tailwind v4**. Sin CSS-in-JS.
 - Checkout + INSERT con estados condicionales (efectivo vs transferencia)
 - Autocompletado por teléfono + selector de direcciones
 
-### Semana 3 — Panel + pago + domiciliarios + impresión
+### Semana 3 — Panel + pago + domiciliarios + alerta sonora
 - Panel único `/pedidos` con Realtime (incluye `awaiting_payment`)
 - Validación de comprobante (aprobar/rechazar con miniatura)
 - Vista `/mensajero` mobile
-- Integración PrintNode (o ESC/POS según impresora)
+- Alerta sonora + toast persistente en pedido nuevo (F4)
 - Botones de estado con plantillas automáticas
 - Banner de "plan vencido" cuando `paid_until < today`
 
@@ -682,7 +672,7 @@ Todo el diseño **100% con Tailwind v4**. Sin CSS-in-JS.
 |--------|---------|------------|
 | Aprobación de WhatsApp Business tarda | Alto | Arrancar el trámite **día 1** |
 | Cliente mayor no abre el link | Medio | Cajero ve alerta en panel y atiende manual |
-| Ticketera incompatible | Medio | Validar modelo en semana 1 |
+| Cajero no oye el beep (audio bloqueado, volumen bajo, ruido) | Medio | Toast persistente como respaldo + verificar audio al iniciar turno |
 | Staff mayor no se adapta al panel | Alto | UI con botones grandes, capacitación corta |
 | Plantillas de WhatsApp rechazadas | Medio | Tener versiones alternativas, texto simple |
 | **Comprobante de pago falso / editado** | Medio | Cajero valida manualmente; en v2 integración bancaria para validar transferencia automática |
@@ -711,7 +701,7 @@ Sin dashboard fancy: una vista `/admin/metricas` con 6 números grandes.
 ### Decidido
 - Stack: Next.js 16 + Supabase + Tailwind v4 + shadcn/ui
 - Sin Zustand, TanStack Query, Drizzle, PostHog, Sentry en v1
-- Ticket impreso desde día 1
+- **Sin ticket impreso ni integración de impresora** (decisión 2026-04-30): alerta sonora + toast persistente reemplazan al papel
 - Domiciliarios propios con vista móvil dedicada
 - Cliente sin login, identidad por teléfono
 - Catálogo web es la vía principal (texto libre → alerta al cajero para manual)
@@ -726,10 +716,9 @@ Sin dashboard fancy: una vista `/admin/metricas` con 6 números grandes.
 - **Sin pasarela de pagos** en v1 (cobro manual por Nequi/Bancolombia + comprobante)
 - Comprobante del cliente al restaurante: **híbrido** (upload en web o por WhatsApp)
 - **Sin panel super-admin en v1**: cobro mensual se gestiona por fuera (Google Calendar + Supabase Studio)
-- **Sin vista cocina dedicada en v1**: el ticket impreso cubre la necesidad
+- **Sin vista cocina dedicada en v1**: el cajero canta o anota a mano para cocina
 
 ### Abierto (decidir en semana 1)
-- [ ] Modelo exacto de ticketera del restaurante → decide PrintNode vs ESC/POS directo
 - [ ] Número de WhatsApp Business a usar (nuevo o el actual `604 322 46 76`)
 - [ ] Cobertura de zonas de entrega y sus ETAs base (ej: zona A = 30 min, zona B = 45 min)
 - [ ] Catálogo inicial de productos, precios por tamaño y fotos (necesitamos el menú digitalizado)
@@ -785,10 +774,11 @@ Cuando aparezca el **2do cliente**. Ahí vale la pena:
 
 | Responsabilidad | Quién |
 |-----------------|-------|
-| Infraestructura (Vercel, Supabase, dominio, PrintNode) | **Desarrollador** (a cambio de la mensualidad) |
+| Infraestructura (Vercel, Supabase, dominio) | **Desarrollador** (a cambio de la mensualidad) |
 | Cuenta de WhatsApp Business + verificación Meta | **Cliente** (va a su nombre) |
 | Catálogo, precios, datos de pago (Nequi/Bancolombia) | **Cliente** |
-| Soporte y actualizaciones | **Desarrollador** |
+| Tablet/PC del mostrador con audio funcionando | **Cliente** (hardware propio, no entra en la mensualidad) |
+| Soporte y actualizaciones del software | **Desarrollador** |
 | Datos del negocio (pedidos, clientes finales) | **Cliente** (export disponible) |
 
 ### 17.5 Matemática por cliente

@@ -15,9 +15,6 @@ const serverSchema = z.object({
   WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
   META_GRAPH_API_VERSION: z.string().default("v23.0"),
 
-  PRINTNODE_API_KEY: z.string().optional(),
-  PRINTNODE_PRINTER_ID: z.string().optional(),
-
   CRON_SECRET: z.string().min(16),
 });
 

@@ -2,13 +2,41 @@
 
 import { Inbox, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
+import { toast } from "sonner";
 
 import { OrderCard } from "@/components/dashboard/order-card";
 import { OrderDetailSheet } from "@/components/dashboard/order-detail";
 import type { ActiveDriver, CurrentStaff } from "@/features/auth/queries";
 import type { OrderSummary } from "@/features/orders/types";
 import { createClient } from "@/lib/supabase/client";
+
+const ALERTING_STATUSES = new Set(["new", "awaiting_payment"]);
+
+function formatCOP(cents: number): string {
+  return new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 0,
+  }).format(cents / 100);
+}
+
+// Beep generado con Web Audio API: ~350ms a 880Hz con envelope para no asustar.
+// Sin archivos en /public; falla silenciosa si el browser bloquea el contexto.
+function playBeep(ctx: AudioContext): void {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.value = 880;
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  const t0 = ctx.currentTime;
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(0.25, t0 + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.35);
+  osc.start(t0);
+  osc.stop(t0 + 0.36);
+}
 
 interface OrdersBoardProps {
   initial: OrderSummary[];
@@ -20,6 +48,26 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
   const router = useRouter();
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  // Autoplay policy: el AudioContext se debe crear/usar dentro del primer
+  // gesto del usuario. Lo inicializamos al primer pointerdown/keydown.
+  useEffect(() => {
+    function unlock(): void {
+      if (audioCtxRef.current) return;
+      try {
+        audioCtxRef.current = new AudioContext();
+      } catch {
+        audioCtxRef.current = null;
+      }
+    }
+    window.addEventListener("pointerdown", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+  }, []);
 
   useEffect(() => {
     const supabase = createClient();
@@ -27,9 +75,9 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
     let cancelled = false;
 
     (async () => {
-      // Sin esto los eventos no llegan: el cliente Realtime pasa por anon
-      // y la policy `for select to authenticated` los filtra silenciosamente.
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (session) await supabase.realtime.setAuth(session.access_token);
       if (cancelled) return;
 
@@ -37,8 +85,51 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
         .channel("orders-feed")
         .on(
           "postgres_changes",
-          { event: "*", schema: "public", table: "orders" },
-          () => {
+          { event: "INSERT", schema: "public", table: "orders" },
+          (payload) => {
+            const row = payload.new as {
+              id: string;
+              status: string;
+              total_cents: number;
+            };
+            if (ALERTING_STATUSES.has(row.status)) {
+              if (audioCtxRef.current) {
+                try {
+                  playBeep(audioCtxRef.current);
+                } catch {
+                  // contexto cerrado o suspendido: ignorar
+                }
+              }
+              toast(`🍕 ¡Pedido nuevo! ${formatCOP(row.total_cents)}`, {
+                id: row.id,
+                duration: Infinity,
+                action: {
+                  label: "Visto",
+                  onClick: () => toast.dismiss(row.id),
+                },
+              });
+            }
+            startTransition(() => router.refresh());
+          },
+        )
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "orders" },
+          (payload) => {
+            const row = payload.new as { id: string; status: string };
+            // Si el cajero ya avanzó el pedido, descartamos la alerta sola.
+            if (!ALERTING_STATUSES.has(row.status)) {
+              toast.dismiss(row.id);
+            }
+            startTransition(() => router.refresh());
+          },
+        )
+        .on(
+          "postgres_changes",
+          { event: "DELETE", schema: "public", table: "orders" },
+          (payload) => {
+            const row = payload.old as { id: string };
+            toast.dismiss(row.id);
             startTransition(() => router.refresh());
           },
         )

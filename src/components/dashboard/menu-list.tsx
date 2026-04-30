@@ -40,6 +40,8 @@ import { SIZE_LABEL, type Product } from "@/features/catalog/types";
 import { formatCop } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
+// ─── Tipos, constantes, helpers ─────────────────────────────────────
+
 type CategoryFilter = "all" | (typeof PRODUCT_CATEGORIES)[number];
 
 const CATEGORY_TABS: { value: CategoryFilter; label: string }[] = [
@@ -76,6 +78,8 @@ function primarySize(product: Product): string | null {
   const first = product.sizes[0];
   return first ? SIZE_LABEL[first.size] : null;
 }
+
+// ─── Componente principal: filtros, lista, sheet de edición ─────────
 
 interface MenuListProps {
   initial: Product[];
@@ -255,6 +259,8 @@ export function MenuList({ initial }: MenuListProps) {
     </>
   );
 }
+
+// ─── Subcomponentes de presentación ────────────────────────────────
 
 function EmptyState({ onCreate }: { onCreate: () => void }) {
   return (

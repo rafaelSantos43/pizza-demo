@@ -25,7 +25,5 @@ export const DEMO_SERVER_ENV = {
   WHATSAPP_ACCESS_TOKEN: "demo",
   WHATSAPP_PHONE_NUMBER_ID: "demo",
   META_GRAPH_API_VERSION: "v23.0",
-  PRINTNODE_API_KEY: undefined,
-  PRINTNODE_PRINTER_ID: undefined,
   CRON_SECRET: "demo-cron-secret-16chars-min",
 };

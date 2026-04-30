@@ -39,6 +39,8 @@ import {
 import { SIZE_LABEL, type Product } from "@/features/catalog/types";
 import { formatCop } from "@/lib/format";
 
+// ─── Tipos, defaults y helpers ──────────────────────────────────────
+
 // Trabajamos con el "input" de Zod porque `category` tiene default y RHF
 // no debe exigirla como required al primer render.
 type FormValues = z.input<typeof productInputSchema>;
@@ -82,6 +84,8 @@ function productToDefaults(product: Product): FormValues {
     })),
   };
 }
+
+// ─── Componente: form RHF + Zod, modo crear/editar ─────────────────
 
 interface ProductFormSheetProps {
   mode: "create" | "edit";
@@ -176,6 +180,7 @@ export function ProductFormSheet({
   const busy = pending || deleting;
   const descriptionCount = descriptionValue.length;
 
+  // ─── Render: sheet con form, footer fijo con CTAs ─────────────────
   return (
     <Sheet
       open={open}

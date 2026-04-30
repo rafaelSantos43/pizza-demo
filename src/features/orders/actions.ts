@@ -17,6 +17,8 @@ import { createOrderInputSchema, type CreateOrderInput } from "./schemas";
 import { canTransition } from "./state-machine";
 import type { OrderStatus } from "./types";
 
+// ─── Schemas y tipos compartidos por todas las actions ──────────────
+
 const ORDER_STATUSES = [
   "new",
   "awaiting_payment",
@@ -68,6 +70,9 @@ function sizeAtLeast(size: PizzaSize, min: PizzaSize): boolean {
   return SIZE_ORDER.indexOf(size) >= SIZE_ORDER.indexOf(min);
 }
 
+// Cash salta validación de pago → entra directo a preparing.
+// Transferencia con comprobante → awaiting_payment con la imagen lista.
+// Transferencia sin comprobante → awaiting_payment esperando WhatsApp (camino B).
 function pickInitialStatus(
   input: CreateOrderInput,
 ): { status: OrderStatus; needsProof: boolean; proofUrl: string | null } {
@@ -83,6 +88,10 @@ function pickInitialStatus(
   }
   return { status: "awaiting_payment", needsProof: true, proofUrl: null };
 }
+
+// ─── createOrder: entrada del pedido desde el catálogo público ─────
+// Recalcula precios server-side (no confía en el carrito del cliente),
+// inserta address+order+items+event, marca token usado.
 
 export async function createOrder(
   input: unknown,
@@ -308,6 +317,8 @@ export async function createOrder(
   }
 }
 
+// ─── Acciones del staff: transiciones, pagos, asignación ───────────
+
 type SimpleResult = { ok: true } | { ok: false; error: string };
 
 interface OrderStateRow {
@@ -357,6 +368,8 @@ export async function transitionOrder(input: {
     if (toStatus === "delivered") {
       update.delivered_at = new Date().toISOString();
     }
+    // Rechazar el comprobante: limpiamos la URL para que el cliente
+    // pueda reenviar uno nuevo (camino A o B) sin colisionar con el viejo.
     if (toStatus === "payment_rejected") {
       update.needs_proof = true;
       update.payment_proof_url = null;
