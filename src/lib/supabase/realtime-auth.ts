@@ -12,18 +12,24 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export function attachRealtimeAuthSync(supabase: SupabaseClient): () => void {
   let cancelled = false;
 
-  // setAuth inicial: si ya hay sesión al montar, propagar el token al
-  // canal antes de cualquier subscribe del caller. El caller debe llamar
-  // .subscribe() DESPUÉS de la promesa de getSession para garantizar que
-  // los primeros eventos lleguen autorizados.
+  // setAuth inicial: usamos `refreshSession()` en lugar de `getSession()`
+  // para garantizar un token fresco. Razón: si la pestaña estuvo dormida
+  // (laptop cerrada, máquina en suspend), el auto-refresh interno del
+  // SDK no corre porque el JS está pausado. Al despertar, el access_token
+  // cacheado puede estar expirado y el primer subscribe a Realtime tira
+  // `InvalidJWTToken` silenciosamente.
+  // `refreshSession()` fuerza un round-trip al server con el refresh_token,
+  // garantizando token vigente. Si el refresh_token también expiró,
+  // session retorna null y la suscripción se queda sin auth (RLS bloquea
+  // los events) — recuperable cuando el cajero re-haga login.
   supabase.auth
-    .getSession()
+    .refreshSession()
     .then(({ data: { session } }) => {
       if (cancelled || !session) return;
       void supabase.realtime.setAuth(session.access_token);
     })
     .catch((err) => {
-      console.error("[realtime-auth] initial getSession failed", err);
+      console.error("[realtime-auth] initial refreshSession failed", err);
     });
 
   // Eventos relevantes: TOKEN_REFRESHED (refresh nativo de Supabase),
