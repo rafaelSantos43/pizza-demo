@@ -9,7 +9,7 @@ Bugs silenciosos del modelo de datos, condiciones de carrera, autorización, int
 ## L01 · `createOrder` no es atómico → pedidos zombi e direcciones huérfanas
 
 - **Severidad:** high
-- **Estado:** open
+- **Estado:** in progress · 2026-04-30
 - **Ubicación:** [src/features/orders/actions.ts:115-300](../../src/features/orders/actions.ts#L115-L300)
 
 ### Síntoma observable
@@ -28,6 +28,99 @@ La función ejecuta múltiples `INSERT` secuenciales con cliente service-role pe
 
 ### Fix propuesto
 Mover toda la cascada a una **stored procedure** `create_order(jsonb)` que retorne `order_id`, ejecutada desde un solo `supabaseAdmin.rpc("create_order", ...)`. Postgres maneja la transacción nativamente. Alternativa: replicar `address_id` resuelto en una primera tx y mover los demás INSERT a `do $$ ... $$ language plpgsql`. ~1 día.
+
+### Decisión de implementación · 2026-04-30
+
+**Atacando el síntoma más real:** del bosquejo original ("orphan addresses,
+orphan orders, duplicate orders on retry"), el más grave operativamente
+es **el duplicado de pedidos cuando el cliente reintenta**. Hoy, si
+`createOrder` falla a mitad de cascade, `markTokenUsed` (que vive AL
+FINAL) NO se ejecuta. El cliente ve "No pudimos crear tu pedido", toca
+"Confirmar" otra vez, `verifyToken` pasa porque `used_at` sigue null,
+y se dispara una segunda inserción completa. El cajero ve dos pedidos
+idénticos en el panel y tiene que cancelar uno.
+
+**Por qué AHORA pero con alcance acotado:** la atomicidad completa (stored
+procedure) es ~1 día y tensiona §1 RULES. El duplicado de pedidos lo
+podemos cerrar HOY moviendo el `markTokenUsed` al inicio (~5 min). Los
+orphans (addresses sin order, orders sin items) son tolerables si
+filtramos en queries y dejamos limpieza como deuda. Resolver primero
+lo que más duele al cliente, dejar la atomicidad estricta como deuda
+con criterio claro de cuándo elevarla.
+
+**Compatibilidad con RULES.md:**
+- §1 Layering: ✅ stays — solo movemos una llamada de orden dentro del
+  Server Action; sin lógica nueva en DB.
+- §2 RSC: n/a.
+- §3 Memoización: n/a.
+- §4 Validación en bordes: ✅ alineado (la validación del token sigue al inicio).
+- §5 Naming: n/a.
+- §6 Pre-delivery: tsc, sin `any`, sin cambios de UI.
+
+**Contradice algún hallazgo o ENGRAM:** parcialmente con ENGRAM 2026-04-16
+("Token 2-step: `verifyToken` SOLO lee, `createOrder` marca `used_at`").
+La razón original era "si verify marcara en el primer page load, el
+refresh del catálogo mataría al cliente antes del checkout". Sigue
+respetada — el primer page load llama `verifyToken`, NO `createOrder`.
+Solo el botón "Confirmar pedido" llama `createOrder`. Mover
+`markTokenUsed` al inicio de `createOrder` no afecta el page load.
+
+**Alternativas evaluadas:**
+1. **Stored procedure `create_order(jsonb)` con transacción atómica.**
+   Atractiva (correctness completa) pero ~1 día y tensiona §1. Requiere
+   migration nueva y refactor del call site. **Diferida a deuda L01-A**
+   con criterio: subir a estado `in progress` cuando el piloto muestre
+   ≥3 incidentes mensuales de orphans o duplicados.
+2. **Idempotency key client-generated.** Cliente envía un UUID v4 con
+   cada `createOrder`; server lo guarda en `orders.idempotency_key`
+   con UNIQUE constraint. Si un retry llega con la misma key → falla
+   por UNIQUE → server detecta y retorna el orderId existente. Más
+   robusto pero requiere migration y refactor de schema. Mismo costo
+   que stored proc; preferimos esa si vamos a la versión "completa".
+   Diferida.
+3. **Aceptar todo como deuda.** Descartada: el duplicado de pedidos es
+   user-facing y operativo. Mover `markTokenUsed` cuesta 5 minutos.
+4. **Dos llamadas atómicas separadas (Save Point pattern).** Descartada:
+   complica el código sin resolver mejor que la stored proc.
+
+**Alcance del cambio HOY (parcial, lo que cierra el dolor real):**
+- [src/features/orders/actions.ts](../../src/features/orders/actions.ts):
+  - Mover `markTokenUsed(tokenId)` al **principio** del bloque try
+    (después de `verifyToken`, antes de cualquier INSERT). Si falla,
+    abortar con error claro al cliente. Si tiene éxito, continuar.
+  - El catch del try existente ya cubre el rollback parcial natural
+    (Supabase insert fails → catch → return error). El usuario verá
+    el error y NO podrá reintentar con el mismo token (lo cual es
+    correcto: ese token ya está consumido, debe pedir uno nuevo por
+    WhatsApp).
+- [src/features/orders/queries.ts](../../src/features/orders/queries.ts):
+  - `listActiveOrders` y `listOrdersForDriver` filtran orphans
+    (`item_count > 0`) en el `mapActiveOrderRow` ya existente. Los
+    orphans no aparecen en el panel.
+- Total: ~10 líneas modificadas, sin migrations, sin nuevas dependencies.
+
+**Deuda nueva creada:**
+- **L01-A** en `audit/deuda-tecnica.md` (NO lo abro como nuevo finding
+  porque es una porción de L01 diferida): "atomicidad estricta con
+  stored procedure o idempotency key. Trigger: ≥3 incidentes
+  mensuales de orphans/duplicados en piloto. Costo: ~1 día."
+
+**Caveat consciente:** si entre `markTokenUsed` (que ahora va primero)
+y el INSERT del order el cliente cierra el navegador, el token queda
+consumido sin pedido creado. El cliente ve la página de confirmación
+NO cargó. Tendrá que escribir al WhatsApp para pedir un link nuevo.
+Esta es una pérdida de UX aceptable: la alternativa (token sigue vivo
++ duplicado al reintentar) es peor para el cajero.
+
+**Cómo se valida que funcionó:**
+- Manual: forzar un error en el INSERT de `orders` (ej. romper
+  temporalmente el schema) → cliente ve error → al reintentar con
+  el mismo link, recibe "Enlace ya usado" en lugar de un duplicado.
+- Manual: pedido normal → todo funciona.
+- tsc + 37 tests verdes.
+- En piloto, monitorear `orders` para detectar orphans
+  (`select count(*) from orders o where not exists (select 1 from order_items where order_id = o.id)`).
+  Si supera 3/mes, escalar L01-A.
 
 ---
 
@@ -425,7 +518,8 @@ es justamente lo que evita las complicaciones que ENGRAM temía.
 ## L06 · Recordatorios y alertas no reintenta si el send falla
 
 - **Severidad:** low
-- **Estado:** open (decisión consciente, registrar para historia)
+- **Estado:** **deferred to backlog** · 2026-04-30 — ver L06-A en deuda-tecnica.md
+- **(decisión consciente, registrada para historia)**
 - **Ubicación:** [src/features/payments/proof-reminders/run.ts](../../src/features/payments/proof-reminders/run.ts), [src/features/delay-alerts/run.ts](../../src/features/delay-alerts/run.ts)
 
 ### Síntoma observable
@@ -436,6 +530,26 @@ Decisión consciente registrada en ENGRAM (F8): "si falla el send NO revertimos 
 
 ### Fix propuesto (a futuro, no urgente)
 Tabla separada `notification_attempts` con estado `pending|sent|failed_retry|dead` para reintentos exponenciales con cap. 1-2 días. Solo necesario si el piloto muestra >5% de pérdidas.
+
+### Decisión de implementación · 2026-04-30
+
+**No se implementa hoy.** Diferido a deuda-tecnica.md como **L06-A**.
+
+**Razón:** la decisión "marcar el flag antes del send para evitar
+ráfagas si el sender está intermitente" es una elección de tradeoff,
+no un bug. Aceptamos pérdida ocasional de notificación sobre el riesgo
+de spam masivo si el cron golpea durante un brownout de Twilio. El
+costo del fix correcto (tabla `notification_attempts`, retries con
+backoff) es mayor a 1 día y solo se justifica con datos de piloto que
+muestren pérdidas reales >5%.
+
+**Trigger para reabrir:** monitorear en piloto (1) tasa de
+recordatorios `proof_reminder_sent_at` cuyo orden permanece >30 min
+en `awaiting_payment` (proxy de "el cliente no recibió el aviso") y
+(2) reportes manuales del cajero sobre pedidos sin notificación.
+Si supera 5% de pedidos, escalar a in progress.
+
+**Compatibilidad RULES:** n/a (no hay cambio de código).
 
 ---
 
@@ -459,7 +573,7 @@ El `UPDATE customers SET name = $1` en `createOrder` sobreescribía el nombre vi
 ## L08 · Webhook de Twilio responde greet a cualquier mensaje (incluyendo imágenes)
 
 - **Severidad:** medium
-- **Estado:** open
+- **Estado:** **moved to LAUNCH_CHECKLIST B (feature work)** · 2026-04-30
 - **Ubicación:** [app/api/webhooks/twilio/route.ts:79-83](../../app/api/webhooks/twilio/route.ts#L79)
 
 ### Síntoma observable
@@ -473,12 +587,34 @@ El handler de Twilio fue escrito como "MVP de prueba" (comentario explícito en 
 ### Fix propuesto
 Replicar la lógica de `handle-incoming.ts` en el handler de Twilio: detectar `MediaUrl0` en el payload de Twilio para imagen, descargar con auth Twilio, asociar al pedido pendiente del teléfono, etc. ~1 día. Mientras tanto, documentado en checkout como camino B no soportado.
 
+### Decisión de implementación · 2026-04-30
+
+**No es un fix; es feature work.** Movido a
+[LAUNCH_CHECKLIST.md](../LAUNCH_CHECKLIST.md) Bloque B como **B9**.
+
+**Razón:** el handler de Twilio fue construido como "MVP de prueba"
+(comentario explícito en el código). Implementar camino B en Twilio
+es construir una capacidad que NO existe, no arreglar una que se rompió.
+La distinción importa para el contrato del audit: la auditoría reporta
+discrepancias entre comportamiento esperado y real; este caso es
+"funcionalidad incompleta", no "comportamiento incorrecto".
+
+**Mitigación que YA está activa:**
+- El copy del checkout fue ajustado en turno previo para sesgar contra
+  camino B (*"Si tienes problemas para subir el archivo aquí, comunícate
+  con el restaurante"*). El cliente no espera que Twilio acepte fotos.
+- El recordatorio del cron a 5 min sigue funcionando vía Twilio outbound.
+
+**Trigger para reabrir como L0X:** si en piloto un cliente legítimo
+manda foto a Twilio y se pierde (reportado por el cajero), el síntoma
+ya es bug, no missing feature.
+
 ---
 
 ## L09 · `addresses` se crea NUEVA en cada pedido aunque sea idéntica
 
 - **Severidad:** low
-- **Estado:** open
+- **Estado:** **deferred to debt** · 2026-04-30 — ver D06 en deuda-tecnica.md
 - **Ubicación:** [src/features/orders/actions.ts:123-139](../../src/features/orders/actions.ts#L123)
 
 ### Síntoma observable
@@ -490,13 +626,30 @@ Decisión consciente del PRD §9.3: snapshot por pedido. Pero no se hace dedupli
 ### Fix propuesto
 Antes del INSERT, buscar `addresses` con los mismos campos para `customer_id` y reusar `id` si existe. Hash de los campos no-nulos como criterio. ~30 minutos. Solo vale la pena cuando se observe acumulación real (>50 addresses por cliente).
 
+### Decisión de implementación · 2026-04-30
+
+**No se implementa hoy.** Diferido a deuda — ya estaba en D06 desde el
+barrido inicial; aquí solo se ratifica.
+
+**Razón:** dedupe de addresses tiene complejidad (hash determinístico
+sobre campos opcionales, manejo de variaciones tipográficas tipo
+*"Cll 64 b"* vs *"Calle 64b"*) que NO se justifica para una pizzería
+con cliente promedio de 5-15 pedidos/mes. La acumulación de filas
+duplicadas es invisible al usuario y barata en bytes. Resolver
+prematuramente es over-engineering.
+
+**Trigger para activar D06:** un cliente con `>50` filas en addresses
+(query simple), o quejas del cajero por ver direcciones repetidas
+en algún UI futuro de "elegir dirección guardada" (B5 del LAUNCH).
+Cualquiera que ocurra primero.
+
 ---
 
 ## L10 · `pickInitialStatus` puede dejar pedidos en limbo si el cliente no entiende camino B
 
 - **Severidad:** low
-- **Estado:** open (mitigado por copy del checkout)
-- **Ubicación:** [src/features/orders/actions.ts:71-85](../../src/features/orders/actions.ts#L71-L85)
+- **Estado:** **fixed** · 2026-04-30 — proof obligatorio en el botón cuando aplica
+- **Ubicación:** [src/features/orders/actions.ts:71-85](../../src/features/orders/actions.ts#L71-L85), [src/components/shop/checkout-form.tsx](../../src/components/shop/checkout-form.tsx)
 
 ### Síntoma observable
 Un cliente que confirma un pedido con método transferencia/Nequi/Llave SIN subir comprobante queda con `awaiting_payment + needs_proof=true`. Si nunca manda el comprobante por WhatsApp (porque el camino B en Twilio sandbox no lo procesa, ver L08), el pedido queda en limbo. El recordatorio se manda a los 5 min, pero si el cliente no responde, el pedido se queda ahí.
@@ -506,6 +659,53 @@ El flujo asume que el cliente entiende qué hacer. Hoy el copy del checkout dice
 
 ### Fix propuesto
 A corto plazo: bloquear el botón "Confirmar pedido" si `paymentMethod !== cash` y `proofFile === null`. Forzar camino A. **5 minutos.** Mantener camino B en código para cuando Meta vuelva (L08 resuelto).
+
+### Decisión de implementación · 2026-04-30
+
+**Atacando:** mientras Twilio no soporta camino B (L08 → B9 del LAUNCH),
+un cliente que confirma transferencia/Nequi/Llave SIN subir comprobante
+queda con un pedido que NUNCA recibirá su comprobante (porque la única
+vía válida hoy es upload web). El recordatorio del cron se dispara y
+se pierde en el aire.
+
+**Por qué AHORA:** 5 min de trabajo, mitigación adicional al copy ya
+ajustado. El copy SOLO informa; deshabilitar el botón hasta que haya
+proof IMPIDE que el cliente confirme sin saber.
+
+**Compatibilidad RULES:**
+- §1, §2, §3, §4: ✅ todos respetados (es un cambio de UI con guard
+  derivado de estado del form).
+- §5: n/a (no símbolos nuevos).
+- §6: tsc, sin `any`, mobile-first preservado.
+
+**Contradice algún hallazgo:** ENGRAM 2026-04-16 ("Comprobante de pago
+híbrido (upload + WhatsApp)") describió camino B como característica.
+Hoy el camino B FUNCIONA (en código), solo que el sender Meta está
+pausado. Cuando Meta vuelva, se REVIERTE este guard del botón. Lo
+documenta el comentario inline.
+
+**Alternativas descartadas:**
+1. **Solo dejar el copy.** Descartada: el copy es informativo; un cliente
+   distraído puede ignorarlo. Quitar la opción es más fuerte.
+2. **Mover camino B al backend (auto-detectar imagen y crear pedido sin proof).**
+   Descartada: feature work grande, va en B9.
+3. **Validar server-side y rechazar.** Descartada (complemento, no
+   sustituto): ya validamos en `pickInitialStatus`. El bloqueo del
+   botón es UI defensiva. Si alguien fuerza el POST por DevTools,
+   sigue siendo válido crear el pedido en `awaiting_payment +
+   needs_proof=true`. La intención es ayudar al cliente normal.
+
+**Alcance:** ~5 líneas en [checkout-form.tsx](../../src/components/shop/checkout-form.tsx)
+— extender la condición `disabled` del botón "Confirmar pedido" para
+incluir `paymentMethod !== "cash" && !proofFile`. Comentario que indique
+revertir cuando camino B vuelva.
+
+**Cómo se valida:**
+- Manual: escoger Bancolombia, no subir comprobante → botón disabled.
+  Subir comprobante → botón habilitado.
+- Manual: escoger efectivo → botón siempre habilitado (sin comprobante,
+  sin guard).
+- tsc + 37 tests verdes.
 
 ---
 

@@ -108,7 +108,10 @@ export async function listActiveOrders(): Promise<OrderSummary[]> {
   if (error) throw error;
 
   const rows = (data ?? []) as unknown as ActiveOrderRow[];
-  return rows.map(mapActiveOrderRow);
+  // L01: descartar orphans (orders sin items) que pueden quedar si la
+  // cascada del INSERT falló a mitad. No corrompen el sistema, solo
+  // confunden al cajero si aparecen en el panel.
+  return rows.map(mapActiveOrderRow).filter((o) => o.item_count > 0);
 }
 
 export async function listOrdersForDriver(
@@ -131,7 +134,8 @@ export async function listOrdersForDriver(
   if (error) throw error;
 
   const rows = (data ?? []) as unknown as ActiveOrderRow[];
-  return rows.map(mapActiveOrderRow);
+  // L01: igual que `listActiveOrders`, descartamos orphans.
+  return rows.map(mapActiveOrderRow).filter((o) => o.item_count > 0);
 }
 
 interface OrderDetailRow {

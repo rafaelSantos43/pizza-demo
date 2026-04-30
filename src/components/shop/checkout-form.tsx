@@ -653,12 +653,16 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
                 {formatCop(total)}
               </span>
             </div>
+            {/* L10: con Twilio sandbox el camino B (comprobante por
+                WhatsApp) NO funciona; obligamos al cliente a subir el
+                archivo aquí cuando elige transferencia. Cuando Meta
+                vuelva (B9 del LAUNCH), revertir esta condición. */}
             <Button
               type="submit"
               variant="success"
               size="lg"
               className="h-12 flex-1 text-base"
-              disabled={submitting}
+              disabled={submitting || (needsProof && !proofFile)}
             >
               {submitting ? (
                 <Loader2 className="size-5 animate-spin" />

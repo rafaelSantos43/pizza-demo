@@ -191,6 +191,43 @@ Si esto se olvida, el sistema corre OK pero F8 (alerta de retraso) y proof remin
 
 ---
 
+## L01-A · Atomicidad estricta de `createOrder` (stored procedure o idempotency key)
+
+- **Severidad:** medium
+- **Estado:** open (porción diferida de L01)
+- **Ubicación:** [src/features/orders/actions.ts:115-300](../../src/features/orders/actions.ts#L115-L300)
+
+### Análisis
+L01 (en `audit/logica.md`) cerró la parte user-facing más urgente: mover
+`markTokenUsed` al inicio para evitar duplicados en el panel cuando el
+cliente reintenta. Lo que quedó pendiente es la atomicidad real:
+- Si `INSERT addresses` tiene éxito pero `INSERT orders` falla → fila
+  huérfana en `addresses`. Hoy invisible (no se muestra en UI), solo
+  acumula bytes en DB.
+- Si `INSERT orders` tiene éxito pero `INSERT order_items` falla →
+  order huérfana sin items. Las queries ya filtran `item_count > 0`,
+  así que no aparece en el panel; sigue acumulando bytes.
+
+Ambos son tolerables hoy porque (a) la tasa de fallos parciales es
+baja, (b) las queries ya filtran orphans, (c) los bytes son
+despreciables.
+
+### Fix propuesto cuando se eleve
+**Stored procedure** `create_order(jsonb)` que envuelva la cascada
+completa en una transacción. Server Action sigue siendo el dueño de la
+lógica de dominio (Zod, computeUnitPrice, pickInitialStatus); solo
+delega los INSERTs cascade al RPC para garantizar atomicidad.
+
+**Trigger para activar:** uno de los siguientes:
+- ≥3 incidentes mensuales de orphans/duplicados detectados en piloto.
+- `select count(*) from orders o where not exists (select 1 from order_items where order_id = o.id)` supera 10 filas en cualquier momento.
+- Un cliente reporta haber pagado y no ver pedido (síntoma de orphan address sin order).
+
+**Costo:** ~1 día. Tensiona §1 RULES (lógica en DB) pero solo el cascade
+INSERT, no validación. Aceptable como excepción documentada.
+
+---
+
 ## D12 · Tres helpers de tokens duplican lógica HMAC + lookup
 
 - **Severidad:** low

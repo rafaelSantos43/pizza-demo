@@ -112,6 +112,20 @@ export async function createOrder(
   }
   const { customerId, tokenId } = tokenResult;
 
+  // L01: marcar el token usado ANTES de cualquier INSERT. Si la cascada
+  // falla a mitad, el cliente NO puede reintentar con el mismo link y
+  // generar un duplicado en el panel. La alternativa "marcar al final"
+  // dejaba la ventana abierta.
+  try {
+    await markTokenUsed(tokenId);
+  } catch (err) {
+    console.error("markTokenUsed failed", err);
+    return {
+      ok: false,
+      error: "No pudimos crear tu pedido. Pide un nuevo link por WhatsApp.",
+    };
+  }
+
   try {
     // El nombre del checkout siempre gana — es el cliente confirmando
     // cómo quiere que lo llamemos en este pedido.
@@ -298,18 +312,14 @@ export async function createOrder(
       });
     if (eventErr) throw eventErr;
 
-    try {
-      await markTokenUsed(tokenId);
-    } catch (err) {
-      console.error("markTokenUsed failed", err);
-    }
-
     return { ok: true, data: { orderId } };
   } catch (err) {
     console.error("createOrder failed", err);
+    // El token ya fue consumido arriba. Si el cliente reintenta verá
+    // "Enlace ya usado". Aceptable: no genera duplicados en el panel.
     return {
       ok: false,
-      error: "No pudimos crear tu pedido. Intenta de nuevo.",
+      error: "No pudimos crear tu pedido. Pide un nuevo link por WhatsApp.",
     };
   }
 }
