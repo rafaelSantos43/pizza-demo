@@ -17,48 +17,89 @@ interface SendResult {
   error?: string;
 }
 
-// Textos en español neutral; replican lo que el PRD §F6 espera ver al
-// cliente. Los emojis siguen el estilo del greet inicial.
-const STATUS_MESSAGES: Partial<Record<OrderStatus, string>> = {
-  payment_approved: "Pago aprobado ✅ Arrancamos tu pedido 🍕",
-  preparing: "Tu pedido está en preparación 🍕",
-  ready: "Tu pedido está listo, sale en minutos 🛵",
-  on_the_way: "Tu pedido está en camino 🚗",
-  delivered: "Entregado ✅ ¡Gracias por preferirnos!",
-  payment_rejected:
-    "No pudimos validar tu comprobante 🙏 ¿Podrías enviarnos uno nuevo? Puedes responder a este chat con la foto o usar el link del pedido.",
-};
+// La hora del pedido se inyecta en cada mensaje para que un cliente con
+// VARIOS pedidos activos pueda distinguir cuál está siendo notificado
+// ("tu pedido de las 7:50 PM está listo"). PRD §F6 no lo especifica
+// pero es lo natural para que las notificaciones no se confundan.
+const hourFormatter = new Intl.DateTimeFormat("es-CO", {
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+  timeZone: "America/Bogota",
+});
 
-const DELAY_APOLOGY_MESSAGE =
-  "Disculpa la demora 🙏 Tu pedido está tomando un poco más, ya va saliendo.";
+function formatOrderHour(iso: string | null): string | null {
+  if (!iso) return null;
+  try {
+    return hourFormatter.format(new Date(iso));
+  } catch {
+    return null;
+  }
+}
 
-async function getOrderPhone(orderId: string): Promise<string | null> {
+// Mensajes en español neutral; replican lo que el PRD §F6 espera ver al
+// cliente. La hora se inserta dinámicamente arriba.
+function messageForStatus(
+  toStatus: OrderStatus,
+  hour: string | null,
+): string | null {
+  const tag = hour ? ` de las ${hour}` : "";
+  switch (toStatus) {
+    case "payment_approved":
+      return `Pago aprobado ✅ Arrancamos tu pedido${tag} 🍕`;
+    case "preparing":
+      return `Tu pedido${tag} está en preparación 🍕`;
+    case "ready":
+      return `Tu pedido${tag} está listo, sale en minutos 🛵`;
+    case "on_the_way":
+      return `Tu pedido${tag} está en camino 🚗`;
+    case "delivered":
+      return `Tu pedido${tag} fue entregado ✅ ¡Gracias por preferirnos!`;
+    case "payment_rejected":
+      return (
+        `No pudimos validar el comprobante de tu pedido${tag} 🙏 ` +
+        `¿Podrías enviarnos uno nuevo? Responde a este chat con la foto.`
+      );
+    default:
+      // Estados sin notificación al cliente (new, awaiting_payment, cancelled).
+      return null;
+  }
+}
+
+interface OrderRow {
+  created_at: string | null;
+  customer: { phone: string | null } | null;
+}
+
+async function getOrderForNotification(
+  orderId: string,
+): Promise<OrderRow | null> {
   const { data, error } = await supabaseAdmin
     .from("orders")
-    .select("customer:customers(phone)")
+    .select("created_at, customer:customers(phone)")
     .eq("id", orderId)
     .maybeSingle();
   if (error) {
-    console.error("[notifications] phone lookup failed", error);
+    console.error("[notifications] order lookup failed", error);
     return null;
   }
-  const row = data as unknown as {
-    customer: { phone: string | null } | null;
-  } | null;
-  return row?.customer?.phone ?? null;
+  return (data as unknown as OrderRow | null) ?? null;
 }
 
 export async function sendOrderUpdate(
   orderId: string,
   toStatus: OrderStatus,
 ): Promise<SendResult> {
-  const message = STATUS_MESSAGES[toStatus];
-  // Estado sin notificación mapeada (new, awaiting_payment, cancelled).
-  // No es error — ese flujo no debe avisar al cliente.
-  if (!message) return { ok: true };
+  const order = await getOrderForNotification(orderId);
+  if (!order) return { ok: false, error: "order not found" };
 
-  const phone = await getOrderPhone(orderId);
+  const phone = order.customer?.phone ?? null;
   if (!phone) return { ok: false, error: "no phone for order" };
+
+  const hour = formatOrderHour(order.created_at);
+  const message = messageForStatus(toStatus, hour);
+  // Estado sin notificación mapeada — no es error, ese flujo no avisa.
+  if (!message) return { ok: true };
 
   return await sendTwilioText(phone, message);
 }
@@ -66,7 +107,17 @@ export async function sendOrderUpdate(
 export async function sendOrderDelayApology(
   orderId: string,
 ): Promise<SendResult> {
-  const phone = await getOrderPhone(orderId);
+  const order = await getOrderForNotification(orderId);
+  if (!order) return { ok: false, error: "order not found" };
+
+  const phone = order.customer?.phone ?? null;
   if (!phone) return { ok: false, error: "no phone for order" };
-  return await sendTwilioText(phone, DELAY_APOLOGY_MESSAGE);
+
+  const hour = formatOrderHour(order.created_at);
+  const tag = hour ? ` de las ${hour}` : "";
+  const message =
+    `Disculpa la demora con tu pedido${tag} 🙏 ` +
+    `Está tomando un poco más, ya va saliendo.`;
+
+  return await sendTwilioText(phone, message);
 }

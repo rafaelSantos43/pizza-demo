@@ -572,8 +572,8 @@ export function CheckoutForm({ token, settings }: CheckoutFormProps) {
                         aria-hidden
                       />
                       <span>
-                        ¿Prefieres no subirlo aquí? También puedes enviarlo por
-                        WhatsApp después de confirmar.
+                        Si tienes problemas para subir el archivo aquí,
+                        comunícate con el restaurante.
                       </span>
                     </div>
                   </div>

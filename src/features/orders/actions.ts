@@ -247,6 +247,10 @@ export async function createOrder(
 
     const orderInsert = {
       customer_id: customerId,
+      // Snapshot del nombre tal cual lo escribió en el checkout. La fila
+      // de `customers` también se actualiza arriba para reflejar el "vivo",
+      // pero este snapshot preserva el histórico del momento.
+      customer_name: data.customerName,
       address_id: addressId,
       status,
       total_cents: totalCents,

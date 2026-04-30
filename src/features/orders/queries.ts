@@ -51,18 +51,23 @@ interface ActiveOrderRow {
   eta_at: string | null;
   created_at: string;
   driver_id: string | null;
+  // Snapshot del nombre en el momento del pedido. Los pedidos creados
+  // antes de la migration 0007 quedaron con NULL si el backfill falló
+  // por algún motivo — el mapper hace fallback al `customer.name` vivo.
+  customer_name: string | null;
   customer: OrderSummaryCustomer | null;
   address: OrderSummaryAddress | null;
   order_items: { count: number }[] | null;
 }
 
 const ACTIVE_ORDER_SELECT = `id, status, total_cents, payment_method, needs_proof, delayed,
-       eta_at, created_at, driver_id,
+       eta_at, created_at, driver_id, customer_name,
        customer:customers(id, phone, name),
        address:addresses(street, complex_name, neighborhood, zone),
        order_items(count)`;
 
 function mapActiveOrderRow(row: ActiveOrderRow): OrderSummary {
+  const liveCustomer = row.customer ?? { id: "", phone: "", name: null };
   return {
     id: row.id,
     status: row.status,
@@ -73,7 +78,10 @@ function mapActiveOrderRow(row: ActiveOrderRow): OrderSummary {
     eta_at: row.eta_at,
     created_at: row.created_at,
     driver_id: row.driver_id,
-    customer: row.customer ?? { id: "", phone: "", name: null },
+    customer: {
+      ...liveCustomer,
+      name: row.customer_name ?? liveCustomer.name,
+    },
     address: row.address ?? {
       street: "",
       complex_name: null,
@@ -136,6 +144,7 @@ interface OrderDetailRow {
   notes: string | null;
   created_at: string;
   delivered_at: string | null;
+  customer_name: string | null;
   customer: OrderDetailCustomer | null;
   address: OrderDetailAddress | null;
   items:
@@ -163,7 +172,7 @@ export async function getOrderDetail(
     .select(
       `id, status, total_cents, payment_method, payment_proof_url,
        needs_proof, payment_approved_at, eta_at, delayed, delay_notified_at,
-       driver_id, notes, created_at, delivered_at,
+       driver_id, notes, created_at, delivered_at, customer_name,
        customer:customers(id, phone, name),
        address:addresses(id, street, complex_name, tower, apartment,
          neighborhood, references, zone),
@@ -228,7 +237,11 @@ export async function getOrderDetail(
     notes: row.notes,
     created_at: row.created_at,
     delivered_at: row.delivered_at,
-    customer: row.customer ?? { id: "", phone: "", name: null },
+    customer: {
+      ...(row.customer ?? { id: "", phone: "", name: null }),
+      // Snapshot del momento del pedido sobre el JOIN del cliente "vivo".
+      name: row.customer_name ?? row.customer?.name ?? null,
+    },
     address: row.address ?? {
       id: "",
       street: "",
