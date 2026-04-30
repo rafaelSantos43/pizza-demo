@@ -20,7 +20,7 @@ function readStoredFlag(): boolean {
 }
 
 function persistStoredFlag(): void {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined") return; 
   try {
     window.localStorage.setItem(STORAGE_KEY, "1");
   } catch {
