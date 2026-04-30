@@ -118,7 +118,6 @@ export function DetailBody({
                     alt="Comprobante de pago"
                     width={320}
                     height={200}
-                    unoptimized
                     className="h-32 w-full object-cover"
                   />
                 </button>
@@ -132,7 +131,6 @@ export function DetailBody({
                   alt="Comprobante de pago"
                   width={1200}
                   height={1600}
-                  unoptimized
                   className="h-auto w-full rounded-md object-contain"
                 />
               </DialogContent>

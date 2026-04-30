@@ -36,6 +36,30 @@ Meta tarda 3-4 semanas en aprobar WhatsApp Business Cloud + plantillas. Mientras
 - [ ] **B7.** **Página `/admin/metricas` (PRD §15)** con 6 números grandes: pedidos hoy, pedidos esta semana, % entregas a tiempo (eta_at vs delivered_at), reclamos manuales, % autocompletado, tasa uso del link. Lee de `orders` y `order_status_events`. ~1 día. Hacerlo después de B6 para poder responder al dueño "¿cómo va el negocio?".
 - [ ] **B8.** **Política de retención de comprobantes 90 días** (PRD §8, §14). Script mensual (cron en Supabase o Vercel Cron) que borra archivos del bucket `payment-proofs` con `created_at < now() - interval '90 days'`. NO borra filas de `orders` — solo el archivo. La fila mantiene `payment_approved_at` como evidencia de que se validó en su momento. ~2h. Necesario antes de saturar el free tier de Storage (~360 MB con tráfico estimado del PRD).
 - [ ] **B9.** **Camino B (comprobante por WhatsApp) en webhook de Twilio.** Hoy `app/api/webhooks/twilio/route.ts` solo dispara `greet` para CUALQUIER mensaje entrante. Replicar la lógica de `handle-incoming.ts` (Meta) para Twilio: detectar `MediaUrl0`, descargar con auth Twilio, asociar al pedido pendiente del teléfono. ~1 día. **Bloqueado por:** mientras Twilio sea sandbox (provisional, no escala a clientes reales), construir el handler completo es trabajo especulativo. Si Meta resuelve el trámite primero, este ítem se descarta — la lógica ya existe en `handle-incoming.ts`. Movido desde audit/logica.md L08.
+- [ ] **B10.** **Activar migrations `.skip` cuando se suba a Supabase Pro.** Hoy hay dos crons de WhatsApp dormidos:
+  - `supabase/migrations/0003_delay_alerts.sql.skip` — alerta proactiva de retraso (PRD §F8)
+  - `supabase/migrations/0006_proof_reminders_cron.sql.skip` — recordatorio de comprobante (mejora 2026-04-30)
+
+  Procedimiento al activar Supabase Pro:
+  1. Renombrar `0003_delay_alerts.sql.skip` → `0003_delay_alerts.sql` y `0006_proof_reminders_cron.sql.skip` → `0006_proof_reminders_cron.sql`
+  2. `bunx supabase db push` (o ejecutar el SQL en Studio → SQL Editor)
+  3. Supabase Studio → Table Editor → `cron_config`. Actualizar:
+     - `delay_alerts_url` → `https://pizza-demo-five.vercel.app/api/cron/delay-alerts`
+     - `proof_reminders_url` → `https://pizza-demo-five.vercel.app/api/cron/proof-reminders`
+     - `cron_secret` → mismo valor que la env var `CRON_SECRET` en Vercel Production
+  4. Verificar que los jobs están programados:
+     ```sql
+     select jobname, schedule, command from cron.job
+     where jobname in ('delay_alerts_every_2min', 'proof_reminders_every_2min');
+     ```
+  5. Ver historial de ejecuciones (debe haber filas dentro de los 4 minutos siguientes):
+     ```sql
+     select start_time, status from cron.job_run_details
+     where jobid in (select jobid from cron.job where jobname like '%every_2min')
+     order by start_time desc limit 10;
+     ```
+
+  Sin este paso, F8 (alerta de retraso) y los recordatorios de comprobante quedan apagados sin alerta visible. ~20 min total. Movido desde audit/deuda-tecnica.md D10.
 
 Tiempo estimado: ~1 día (B1–B5) + ~3 días (B6–B8) = ~4 días total.
 

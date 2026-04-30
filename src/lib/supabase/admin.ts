@@ -23,7 +23,7 @@ function buildClient(): SupabaseClient {
 // Proxy lazy: importar este módulo NO valida env ni construye el cliente
 // (eso rompe `next build` y el dev server cuando no hay .env.local).
 // El cliente se materializa en el primer acceso a una propiedad.
-// TODO: parametrizar con Database tras correr supabase gen types typescript.
+// Sin tipos generados: D13 en docs/audit/deuda-tecnica.md.
 export const supabaseAdmin = new Proxy({} as SupabaseClient, {
   get(_target, prop) {
     const instance = buildClient();

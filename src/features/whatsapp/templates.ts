@@ -55,9 +55,9 @@ export function templateForStatus(status: OrderStatus): TemplateKey | null {
       return "on_the_way";
     case "delivered":
       return "delivered";
-    // payment_rejected no está listado en PRD §F6 con plantilla específica;
-    // por ahora lo dejamos sin notificación auto. TODO: registrar plantilla
-    // pf_payment_rejected en Meta y mapearla aquí.
+    // payment_rejected: el adapter Twilio cubre este caso con texto libre.
+    // Para Meta: cuando el trámite vuelva, aprobar `pf_payment_rejected` y
+    // mapearlo aquí. Ver docs/audit/deuda-tecnica.md D02.
     default:
       return null;
   }

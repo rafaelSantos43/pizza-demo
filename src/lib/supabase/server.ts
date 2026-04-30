@@ -5,7 +5,7 @@ import { cookies } from "next/headers";
 
 import { getClientEnv } from "@/lib/env";
 
-// TODO: parametrizar con Database tras correr supabase gen types typescript
+// Sin tipos generados: D13 en docs/audit/deuda-tecnica.md.
 export async function createClient() {
   const cookieStore = await cookies();
   const env = getClientEnv();

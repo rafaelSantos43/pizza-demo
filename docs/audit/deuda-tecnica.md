@@ -46,28 +46,59 @@ Cuando se reactive Meta:
 
 ---
 
-## D03 · Sin tests E2E (Playwright instalado pero sin specs)
+## D03 · Sin tests E2E (Playwright)
 
 - **Severidad:** medium
-- **Estado:** open
-- **Ubicación:** [package.json:devDependencies](../../package.json)
+- **Estado:** **deferred to backlog** · 2026-04-30
+- **Ubicación:** [package.json](../../package.json)
 
 ### Análisis
-Playwright está instalado (`@playwright/test`) pero no hay carpeta `e2e/` ni specs. El proyecto solo tiene unit tests con vitest (37 tests). Para un MVP single-tenant es justificable pero antes del piloto vale la pena agregar 2-3 specs críticos.
+**Corrección al hallazgo original:** Playwright NO está instalado en
+`package.json` (verificado 2026-04-30). El PRD §7.2 lo lista como
+dependencia planeada pero nunca se ejecutó `bun add -d @playwright/test`.
 
 ### Specs mínimos sugeridos
 - `e2e/order-flow.spec.ts`: cliente arma pedido en `/pedir/[token]`, confirma efectivo, verifica `/gracias`
 - `e2e/cashier-panel.spec.ts`: login staff, ve un pedido nuevo, lo aprueba/transiciona, verifica que cambia estado
 - `e2e/expired-link.spec.ts`: abre token expirado, click "Pedir nuevo link", verifica respuesta
 
-~1 día. Bajo prioridad pero alto retorno.
+### Decisión de implementación · 2026-04-30
+
+**Diferido. NO se implementa ahora.**
+
+**Por qué:** la estimación original de "~1 día" estaba subestimada.
+Realista: instalar Playwright + browsers (~10 min), `playwright.config.ts`
+(~30 min), decisión de DB de tests (Supabase shadow project, mock o
+fixture? — ~1h de evaluación), specs (~1-2h cada uno con flakiness
+debugging). Total: 4-6 horas pre-piloto. Para un MVP de 1 dev con
+piloto inminente, el ROI es bajo: en piloto el código se toca poco;
+los tests E2E flaky pueden generar más fricción que valor.
+
+**Compensación:** D04 (tests unitarios para Server Actions) se eleva a
+in-progress en el mismo turno con alcance acotado. Los unitarios son
+más baratos, más estables y cubren las decisiones críticas (matriz de
+roles L02, comprobante check, transitions inválidas) sin el costo de
+infraestructura E2E.
+
+**Trigger para reabrir D03:**
+- Se contrata segundo dev (los E2E pagan en el handoff)
+- Un cambio post-piloto rompe silenciosamente y solo se descubre por
+  reporte del cliente
+- Cualquiera de los dos lo eleva a `in progress`.
+
+---
+
+## D03-skip nota: Playwright dependencia ausente
+
+Si en el futuro alguien retoma D03, recordar: `bun add -d @playwright/test`
+y `bunx playwright install` antes de escribir el primer spec.
 
 ---
 
 ## D04 · Sin tests para Server Actions
 
 - **Severidad:** medium
-- **Estado:** open
+- **Estado:** **fixed (parcial)** · 2026-04-30 — `transitionOrder` cubierto con 12 tests; `createOrder` queda en D04-A
 - **Ubicación:** [src/features/orders/actions.ts](../../src/features/orders/actions.ts), [src/features/catalog/actions.ts](../../src/features/catalog/actions.ts)
 
 ### Análisis
@@ -82,6 +113,64 @@ Mock `supabaseAdmin` con vitest y tests para los caminos:
 - Pedido con producto inactivo → error
 
 ~1 día.
+
+### Decisión de implementación · 2026-04-30
+
+**Atacando alcance reducido:** del bosquejo original (~1 día completo),
+priorizamos los tests de **`transitionOrder`** porque acaba de cerrarse
+en L02 una vulnerabilidad de privilege escalation alta. Sin tests,
+cualquier refactor futuro a la matriz de roles puede regresar el bug
+silenciosamente. `createOrder` queda como **D04-A** (más complejo —
+cascada de INSERTs, mocks múltiples — y menos crítico hoy).
+
+**Por qué AHORA:** L02 vive en código fresco, el contexto está vivo,
+el riesgo de regresión es real. Costo realista: ~1.5h con setup de
+mocks. Tests pequeños, foco en la matriz.
+
+**Compatibilidad RULES:**
+- §1, §2, §3, §4: ✅ test code, no toca dominio.
+- §5: ✅ naming claro de tests.
+- §6: la propia regla §6 implica tests; este fix la honra parcialmente.
+
+**Contradice algún hallazgo:** no.
+
+**Alternativas descartadas:**
+1. **Tests integración contra Supabase de prueba.** Descartada: requiere
+   shadow project + seed scripts + cleanup. >2h solo de setup.
+2. **Refactor para inyectar el cliente Supabase.** Descartada:
+   abstracción especulativa. Mock con `vi.mock` resuelve sin tocar
+   producción.
+3. **Cubrir todo (transitionOrder + createOrder + assignDriver).**
+   Descartada por alcance: ~1h cada uno con sus mocks. Mejor cubrir
+   bien uno crítico que mal tres.
+
+**Alcance:**
+- Nuevo archivo `src/features/orders/__tests__/transition-order.test.ts`.
+- Tests para la matriz L02 (10-12 casos: cada combinación rol×status
+  más casos de driver-asignado y comprobante).
+- Mocks via `vi.mock` para `@/lib/supabase/admin`,
+  `@/features/auth/queries` (getCurrentStaff), y
+  `@/features/notifications/send-order-update` (no disparar Twilio).
+- ~150 líneas de test.
+
+**Cómo se valida:**
+- `bunx vitest run` debe mostrar 37 + N tests pasando (donde N es el
+  número de casos de la matriz, esperado ~12).
+- Cobertura conceptual: cada celda del cuadro de la matriz L02 tiene
+  al menos un caso correspondiente en el test file.
+
+**Deuda residual D04-A:** tests para `createOrder`. Trigger: próxima
+vez que se modifique la lógica de `createOrder` (precio, validación
+de sabores, status inicial). Sin tests previos, refactor es a ciegas.
+
+**Caveat técnico para D04-A:** `vi.clearAllMocks()` NO limpia el queue
+de `mockResolvedValueOnce`. Si un test hace `mockResolvedValueOnce`
+pero el código early-retorna sin consumirlo, el valor queda en el
+queue y se filtra al siguiente test. **Usar `vi.resetAllMocks()`** en
+beforeEach (que sí limpia queue + implementations) y re-establecer
+implementations por test.
+
+---
 
 ---
 
@@ -116,7 +205,7 @@ Ver L09. Aquí queda como deuda técnica con expectativa de hacerse cuando un cl
 ## D07 · `next/image unoptimized` en imágenes de producto
 
 - **Severidad:** low
-- **Estado:** open
+- **Estado:** **fixed (parcial)** · 2026-04-30 — comprobantes optimizados; productos siguen `unoptimized` hasta que el cliente defina dónde aloja sus imágenes
 - **Ubicación:** [src/components/shop/pizza-builder.tsx:140](../../src/components/shop/pizza-builder.tsx#L140), [src/components/dashboard/menu-list.tsx](../../src/components/dashboard/menu-list.tsx)
 
 ### Análisis
@@ -131,12 +220,69 @@ Hoy el catálogo tiene 33 pizzas. Si las imágenes cargan rápido en piloto, no 
 
 ~30 minutos.
 
+### Decisión de implementación · 2026-04-30
+
+**Atacando un alcance reducido del problema original:** al revisar
+`supabase/seed.sql` se constata que las 33 pizzas NO tienen `image_url`
+seteado (campo NULL), entonces hoy NO hay imágenes de producto que
+optimizar. Las únicas imágenes que renderiza la app vía `<Image>`
+con `unoptimized` son los **comprobantes de pago** del bucket
+`payment-proofs` (signed URLs de Supabase Storage). El fix aplica
+solo a esas dos imágenes en `detail-body.tsx`.
+
+**Por qué AHORA:** cuesta poco (~10 min en lugar del 30 estimado),
+deja la infra de `remotePatterns` lista para cuando los productos
+tengan imagen, y mejora UX del cajero al revisar comprobantes (la
+thumbnail de 320×200 hoy descarga la imagen original completa).
+
+**Compatibilidad RULES:**
+- §1 Layering: ✅ config + componentes.
+- §2 RSC: n/a.
+- §3 Memoización: n/a.
+- §4 Validación bordes: n/a.
+- §5 Naming: n/a.
+- §6 Pre-delivery: tsc, sin `any`. Verificar visualmente que el
+  comprobante carga.
+
+**Contradice algún hallazgo:** no.
+
+**Alternativas descartadas:**
+1. **Optimizar también productos.** Descartada: como `image_url` está
+   NULL en seed, no hay nada que optimizar todavía. Y cuando el cliente
+   real suba imágenes, vendrán de URL externos desconocidos (probable
+   Cloudinary o similar). Sin saber qué dominios, no podemos configurar
+   remotePatterns específicos.
+2. **Permitir `https://*` en remotePatterns.** Descartada: demasiado
+   permisivo. Vercel optimizaría cualquier imagen que el admin pegue,
+   con riesgo de SSRF o abuso.
+
+**Alcance:**
+- [next.config.ts](../../next.config.ts): agregar `images.remotePatterns`
+  con el dominio de Supabase Storage del proyecto activo.
+- [src/components/dashboard/order-detail/detail-body.tsx](../../src/components/dashboard/order-detail/detail-body.tsx):
+  quitar `unoptimized` de las dos `<Image>` del comprobante.
+- Otros archivos (`catalog.tsx`, `pizza-builder.tsx`, `menu-list.tsx`)
+  conservan `unoptimized` con un comentario que explica el porqué.
+
+**Deuda residual (D07-A):** cuando los productos tengan imágenes
+reales, agregar el dominio elegido a `remotePatterns` y quitar
+`unoptimized` de los archivos restantes. Si las imágenes terminan en
+Supabase Storage (bucket nuevo `product-images` o similar), el dominio
+ya estará permitido y el cambio será mecánico (~5 min).
+
+**Cómo se valida:**
+- Manual: en el panel del cajero, abrir un pedido con comprobante.
+  Verificar que la thumbnail carga (debería cargar más rápido en móvil).
+- DevTools Network: la URL de la imagen debe pasar por `/_next/image?url=...`
+  (signo de optimización activa) en lugar de ir directa a Supabase.
+- tsc + 37 tests verdes.
+
 ---
 
 ## D08 · Comentarios "TODO" / "por ahora" sin tracking
 
 - **Severidad:** low
-- **Estado:** open
+- **Estado:** **fixed** · 2026-04-30
 - **Ubicación:** ver grep `TODO\|provisional\|por ahora` en el repo
 
 ### Análisis
@@ -146,6 +292,33 @@ Hay varios comentarios en el código que dicen "TODO: cuando Meta vuelva", "Prov
 Convertirlos en entradas de `audit/` o `LAUNCH_CHECKLIST.md` según corresponda. Eliminarlos del código una vez documentados. Convención: comentarios "TODO" se permiten **solo si tienen un ID de auditoría asociado** (`// TODO L02: chequeo de rol`).
 
 ~1h para limpiar.
+
+### Decisión de implementación · 2026-04-30
+
+**Atacando:** 5 referencias residuales detectadas con grep
+`TODO|FIXME|por ahora|provisional|por el momento|temporalmente`:
+
+1. `whatsapp-twilio/README.md:54` — "temporalmente" en docs README sobre
+   ngrok. **Legítimo** (es prosa, no TODO de código). Sin cambio.
+2. `whatsapp/templates.ts:59` — TODO sobre `pf_payment_rejected`.
+   **Reformulado** para apuntar a D02 ("Ver D02").
+3. `lib/supabase/{client,server,admin}.ts` — TODO sobre tipos `Database`.
+   **Reformulado** para apuntar a D13 (creado en este turno).
+
+**Convención fijada:** los comentarios `TODO` se permiten **solo si
+referencian un ID de auditoría** (D## o L##). El grep mensual usa esa
+convención: cualquier `TODO:` sin ID es deuda no rastreada y se debe
+formalizar.
+
+**Compatibilidad RULES:**
+- §5: ✅ los comentarios respetan "explicar el POR QUÉ" — apuntan al
+  ID donde está la justificación completa.
+- Resto: n/a.
+
+**Cómo se valida:**
+- `grep -rn "TODO" src/` debe devolver solo entradas que mencionan un
+  ID (`D##` o `L##`).
+- Manual revisión cada vez que se haga el grep.
 
 ---
 
@@ -171,7 +344,7 @@ Test unitarios con `supabaseAdmin` mockeado:
 ## D10 · Migrations `.skip` requieren intervención manual al subir a Supabase Pro
 
 - **Severidad:** medium
-- **Estado:** open (intencional)
+- **Estado:** **moved to LAUNCH_CHECKLIST B10** · 2026-04-30
 - **Ubicación:** [supabase/migrations/0003_delay_alerts.sql.skip](../../supabase/migrations/0003_delay_alerts.sql.skip), [supabase/migrations/0006_proof_reminders_cron.sql.skip](../../supabase/migrations/0006_proof_reminders_cron.sql.skip)
 
 ### Análisis
@@ -188,6 +361,17 @@ Si esto se olvida, el sistema corre OK pero F8 (alerta de retraso) y proof remin
 - Health check: agregar a `/admin/metricas` (cuando se construya, ver B7) un indicador "Crons activos: 2/2" leyendo `cron.job` table de pg_cron. Si está caído, alerta visible.
 
 20 min documentar; el health check va con B7.
+
+### Decisión de implementación · 2026-04-30
+
+**Hecho parcialmente.** El procedimiento explícito quedó en
+[LAUNCH_CHECKLIST.md B10](../LAUNCH_CHECKLIST.md) (con SQL exacto para
+verificar). La parte de health check sigue diferida — depende de B7
+(`/admin/metricas`).
+
+Bloque A estaba ocupado (A1-A8 ya existían), entonces se ubicó en B10
+(post-piloto, post-Pro). Coherente: el procedimiento de activar pg_cron
+solo aplica cuando suben a Pro, que es post-piloto.
 
 ---
 
@@ -225,6 +409,41 @@ delega los INSERTs cascade al RPC para garantizar atomicidad.
 
 **Costo:** ~1 día. Tensiona §1 RULES (lógica en DB) pero solo el cascade
 INSERT, no validación. Aceptable como excepción documentada.
+
+---
+
+## D13 · Clientes de Supabase sin tipos generados (`Database`)
+
+- **Severidad:** low
+- **Estado:** open
+- **Ubicación:** [src/lib/supabase/client.ts](../../src/lib/supabase/client.ts), [server.ts](../../src/lib/supabase/server.ts), [admin.ts](../../src/lib/supabase/admin.ts)
+
+### Análisis
+Los tres clientes de Supabase no parametrizan `<Database>`. Resultado:
+todas las queries devuelven `unknown`, y forzamos casts manuales en
+queries.ts y actions.ts (`as unknown as ActiveOrderRow[]`, etc.). Eso
+elimina la safety neta de TypeScript: si una columna se renombra o se
+agrega, los tipos en code no se actualizan.
+
+### Fix propuesto
+1. Linkear el proyecto:
+   ```bash
+   bunx supabase login
+   bunx supabase link --project-ref oqkhzqgvofqkjbgreoli
+   ```
+2. Generar tipos:
+   ```bash
+   bunx supabase gen types typescript --linked > src/lib/supabase/database.types.ts
+   ```
+3. Parametrizar los tres clientes con `<Database>` y borrar los casts
+   manuales de queries.
+
+~1h una sola vez + ~10 min cada vez que cambien las migrations (regenerar
+tipos como parte del flujo de migration).
+
+**Cuándo:** próxima vez que se toque alguna migration (sale gratis). O
+si una columna nueva se rompe sin que TypeScript avise (síntoma del
+problema). Antes del piloto si hay tiempo.
 
 ---
 

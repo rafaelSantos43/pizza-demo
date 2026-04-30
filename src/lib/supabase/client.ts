@@ -2,7 +2,7 @@ import { createBrowserClient } from "@supabase/ssr";
 
 import { getClientEnv } from "@/lib/env";
 
-// TODO: parametrizar con Database tras correr supabase gen types typescript
+// Sin tipos generados: D13 en docs/audit/deuda-tecnica.md.
 export function createClient() {
   const env = getClientEnv();
   return createBrowserClient(
