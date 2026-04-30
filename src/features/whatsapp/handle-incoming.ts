@@ -189,7 +189,11 @@ async function handleImageMessage(
 
   const { error: updErr } = await supabaseAdmin
     .from("orders")
-    .update({ payment_proof_url: path, needs_proof: false })
+    .update({
+      payment_proof_url: path,
+      needs_proof: false,
+      payment_proof_source: "whatsapp",
+    })
     .eq("id", order.id);
   if (updErr) {
     console.error("[whatsapp] order update failed", updErr);

@@ -39,6 +39,59 @@
 
 ## Decisiones tomadas (log en orden cronológico inverso)
 
+### 2026-04-30 — Notificaciones al cliente cambian de Meta a Twilio vía adapter aislado
+**Qué:**
+- Nuevo archivo [src/features/notifications/send-order-update.ts](../src/features/notifications/send-order-update.ts) con `sendOrderUpdate(orderId, toStatus)` y `sendOrderDelayApology(orderId)`. Es el ÚNICO archivo del proyecto que importa el sender de Twilio para notificaciones al cliente.
+- [src/features/orders/actions.ts](../src/features/orders/actions.ts) `transitionOrder` ahora llama `sendOrderUpdate` en lugar de `sendOrderStatusTemplate` de Meta.
+- [src/features/delay-alerts/run.ts](../src/features/delay-alerts/run.ts) llama `sendOrderDelayApology` en lugar de `sendTemplate({delay_apology})`.
+- Mensajes plain text (no template) en español según PRD §F6 + uno nuevo para `payment_rejected` que antes no tenía mensaje:
+  - `payment_approved`: "Pago aprobado ✅ Arrancamos tu pedido 🍕"
+  - `preparing`: "Tu pedido está en preparación 🍕"
+  - `ready`: "Tu pedido está listo, sale en minutos 🛵"
+  - `on_the_way`: "Tu pedido está en camino 🚗"
+  - `delivered`: "Entregado ✅ ¡Gracias por preferirnos!"
+  - `payment_rejected` (nuevo): "No pudimos validar tu comprobante 🙏 ¿Podrías enviarnos uno nuevo? Puedes responder a este chat con la foto o usar el link del pedido."
+  - `delay_apology`: "Disculpa la demora 🙏 Tu pedido está tomando un poco más, ya va saliendo."
+- `src/features/whatsapp/sender.ts` (Meta) NO se tocó. `sendOrderStatusTemplate` y `sendTemplate` siguen exportados, simplemente no se llaman desde lógica de negocio. Quedan listos para cuando Meta vuelva.
+
+**Por qué:**
+- Antes del cambio, `transitionOrder` llamaba a Meta sender que tiene `WHATSAPP_ACCESS_TOKEN=dummy` en prod. Resultado: el cajero tocaba botones en el panel pero el cliente no recibía nada. F6 estaba roto sin que se notara.
+- Twilio sandbox manda texto libre (no requiere plantillas aprobadas) → desbloquea el flujo end-to-end HOY para pruebas con números unidos al sandbox.
+- Caveat conocido: Twilio sandbox no escala a clientes reales del restaurante (cada uno tendría que mandar `join <code>` antes de pedir pizza). El sandbox sirve para validar el flujo y demos controlados; el lanzamiento real necesita Meta aprobado o número Twilio dedicado.
+
+**Cómo aplica:**
+- **Patrón de aislamiento:** `notifications/` vive en territorio neutral, no en `whatsapp-twilio/`. El acoplamiento al sender provisional está en una sola línea de import. Para borrar Twilio en el futuro: cambiar el import en `send-order-update.ts` por `sendOrderStatusTemplate` de Meta + reemplazar el cuerpo de las funciones por llamadas al sender de Meta. El resto del código (transitionOrder, delay-alerts) NO cambia.
+- `templateForStatus(payment_rejected)` en `whatsapp/templates.ts` sigue retornando `null` (no había template Meta aprobado). El nuevo flujo cubre `payment_rejected` desde el adapter — cuando Meta vuelva, el dev debe registrar `pf_payment_rejected` y mapearlo en `templateForStatus`.
+- **No se cambió `handle-incoming.ts` (Meta webhook entrante)** — sigue llamando `sendTemplate("payment_received")`. Como el webhook entrante de Meta también está pausado, este código no se ejecuta hoy en prod. Cuando Meta vuelva, ya está bien estructurado y el adapter no aplica acá (es un trigger distinto: respuesta inmediata al recibir imagen).
+- **Caveat de UX:** los números remitentes son distintos según el evento. Hoy:
+  - Greet inicial → Twilio (`+1 415 523 8886`)
+  - Status updates → Twilio (mismo)
+  - Recordatorio comprobante → Twilio (mismo)
+  → No hay inconsistencia. Cuando Meta vuelva, todo el set debe migrar JUNTO al número del cliente para no confundirlo. Documentado para no olvidar.
+
+### 2026-04-30 — Recordatorio automático de comprobante + métrica `payment_proof_source` + alerta visual al cajero
+**Qué:**
+- **Schema (aplicable):** [supabase/migrations/0005_proof_reminders.sql](../supabase/migrations/0005_proof_reminders.sql) agrega `orders.payment_proof_source text` (CHECK `in ('web','whatsapp')` permitiendo NULL) y `orders.proof_reminder_sent_at timestamptz`. Idempotente.
+- **Cron (`.skip`, requiere Supabase Pro):** [supabase/migrations/0006_proof_reminders_cron.sql.skip](../supabase/migrations/0006_proof_reminders_cron.sql.skip) reusa `cron_config` y `cron_secret` de 0003, programa job `proof_reminders_every_2min` que llama POST `/api/cron/proof-reminders` con Bearer.
+- **Lógica:** [src/features/payments/proof-reminders/run.ts](../src/features/payments/proof-reminders/run.ts) busca `awaiting_payment + needs_proof + proof_reminder_sent_at IS NULL + created_at < now()-5min`, marca el flag con guardia `is null` (atomicidad contra doble proceso), y manda Twilio text `"Recuerda enviarme tu comprobante 📸 para arrancar tu pedido."`.
+- **Route handler:** [app/api/cron/proof-reminders/route.ts](../app/api/cron/proof-reminders/route.ts) — copia exacta del patrón de `delay-alerts/route.ts`.
+- **Origen del comprobante:** `createOrder` setea `payment_proof_source = 'web'` cuando recibe `paymentProofPath` (camino A); `handle-incoming.ts` lo setea a `'whatsapp'` al asociar la imagen entrante (camino B). NULL para efectivo.
+- **Reset al rechazar:** `transitionOrder` en `payment_rejected` ahora también limpia `proof_reminder_sent_at` y `payment_proof_source` además de `payment_proof_url` y `needs_proof = true`. Permite que el cliente reenvíe Y reciba un recordatorio nuevo si tarda.
+- **UI cajero:** [src/components/dashboard/order-card.tsx](../src/components/dashboard/order-card.tsx) reemplaza el badge fijo "Necesita comprobante" por una gradación: amarillo (0–4 min), naranja "Esperando comprobante (N min)" (5–29), rojo "Sin comprobante hace N min" (30+). El badge solo aparece para `awaiting_payment + needs_proof`. NO auto-cancela; el cajero decide cuando ve el rojo.
+
+**Por qué:**
+- 5 min para recordar es el sweet spot entre "molestar enseguida" y "perder al cliente que se distrajo". Datos de los chats actuales del restaurante muestran que muchos clientes se demoran 1-3 min en mandar la foto pero se pierden si pasan >10 min sin estímulo.
+- 30 min como umbral visual al cajero (no auto-cancel) porque un auto-cancel a los 30 min destruye pedidos legítimos del cliente que justo iba a mandar la foto. El humano juzga mejor: la regla del proyecto es "primero funcional, después sofisticado".
+- `payment_proof_source` permite medir en piloto qué porcentaje usa A vs B. Si A llega a ≥80%, abre la puerta a deprecar B después; si B se mantiene ≥30%, el híbrido es justificado a largo plazo.
+- Twilio mientras Meta vuelve: el sender está aislado en un import único en `run.ts`. Cuando Meta esté listo, swap a `sendTemplate({ templateKey: "proof_reminder" })` requiere aprobar el template `pf_proof_reminder` en Meta primero.
+
+**Cómo aplica:**
+- Aplicar migration 0005 ya. La 0006 espera a Supabase Pro (igual que 0003 — todavía está `.skip`).
+- Para activar el recordatorio en prod: aplicar 0003 + 0006 + Supabase Studio → `cron_config` → set `proof_reminders_url` y `cron_secret`. Mismas instrucciones que F8.
+- Métrica `payment_proof_source`: consultable con `select payment_proof_source, count(*) from orders where payment_proof_source is not null group by 1`. Sin dashboard por ahora; query manual.
+- El badge naranja/rojo NO se actualiza solo con el reloj — depende del re-render que dispara Realtime cuando hay cambios en `orders`. Si un pedido queda muerto sin cambios, los minutos pueden quedar stale hasta el siguiente evento. Aceptado para MVP; si pesa, agregar `setInterval` en el panel.
+- **Reset en rejected (decisión sutil):** un pedido rechazado vuelve al ciclo completo de recordatorios. Si nunca se quiere repetir el recordatorio para pedidos rechazados, cambiar la lógica del cron para excluir `payment_rejected → awaiting_payment` con un flag adicional. No lo agrego ahora porque la asimetría más útil es: el cliente que recibe "rechazado" debe reintentar y merece el mismo trato que un cliente nuevo.
+
 ### 2026-04-30 — Removido el demo mode completo
 **Qué:** eliminado todo el código de `NEXT_PUBLIC_DEMO_MODE`. Cambios concretos:
 - Borrado: [src/lib/demo.ts](../src/lib/demo.ts), [src/features/orders/demo-fixtures.ts](../src/features/orders/demo-fixtures.ts), [src/features/catalog/demo-fixtures.ts](../src/features/catalog/demo-fixtures.ts) (~500 líneas).

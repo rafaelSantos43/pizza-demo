@@ -32,8 +32,11 @@ Meta tarda 3-4 semanas en aprobar WhatsApp Business Cloud + plantillas. Mientras
 - [ ] **B3.** Mensajes copiables en cada transición de estado: toast o modal con "copia este texto y pégalo en WhatsApp" (reemplazo manual de F6 hasta que Meta esté activo).
 - [ ] **B4.** Botón copy-to-clipboard de dirección en cards del panel y vista mensajero (para pegar en Maps sin retipear).
 - [ ] **B5.** **Autocomplete del cliente recurrente en checkout** (PRD §F2, prometido pero no construido). Query `getCustomerByToken` que devuelva `{ name, addresses[] }`; form hidrata `defaultValues` y agrega selector "Usar dirección guardada" si el cliente ya tiene direcciones. Sin esto los clientes de semana 2+ se cansan de re-llenar todo.
+- [ ] **B6.** **Vista de histórico de pedidos** `/pedidos/historico` con filtros básicos (fecha, teléfono, estado). Hoy `listActiveOrders` filtra `delivered`/`cancelled` → desaparecen del panel pero siguen en DB. Sin la vista, el cajero no puede atender una reclamación tipo "mi pedido del viernes pasado". Reusa `getOrderDetail` para abrir el sheet existente. ~1-2 días. **No urgente para piloto** (poco volumen, el cajero recuerda); hacerlo cuando llegue la primera reclamación o cuando el dueño lo pida.
+- [ ] **B7.** **Página `/admin/metricas` (PRD §15)** con 6 números grandes: pedidos hoy, pedidos esta semana, % entregas a tiempo (eta_at vs delivered_at), reclamos manuales, % autocompletado, tasa uso del link. Lee de `orders` y `order_status_events`. ~1 día. Hacerlo después de B6 para poder responder al dueño "¿cómo va el negocio?".
+- [ ] **B8.** **Política de retención de comprobantes 90 días** (PRD §8, §14). Script mensual (cron en Supabase o Vercel Cron) que borra archivos del bucket `payment-proofs` con `created_at < now() - interval '90 days'`. NO borra filas de `orders` — solo el archivo. La fila mantiene `payment_approved_at` como evidencia de que se validó en su momento. ~2h. Necesario antes de saturar el free tier de Storage (~360 MB con tráfico estimado del PRD).
 
-Tiempo estimado: ~1 día.
+Tiempo estimado: ~1 día (B1–B5) + ~3 días (B6–B8) = ~4 días total.
 
 ---
 

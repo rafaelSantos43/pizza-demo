@@ -7,7 +7,7 @@ import { getCurrentStaff } from "@/features/auth/queries";
 import { SIZE_ORDER, type PizzaSize } from "@/features/catalog/types";
 import { markTokenUsed } from "@/features/order-tokens/mark-used";
 import { verifyToken } from "@/features/order-tokens/verify";
-import { sendOrderStatusTemplate } from "@/features/whatsapp/sender";
+import { sendOrderUpdate } from "@/features/notifications/send-order-update";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 import { computeEtaAt } from "./eta";
@@ -253,6 +253,10 @@ export async function createOrder(
       payment_method: data.paymentMethod,
       payment_proof_url: proofUrl,
       needs_proof: needsProof,
+      // Camino A si llegó comprobante en checkout. Camino B (WhatsApp) lo
+      // setea handle-incoming cuando asocia la imagen. NULL para efectivo
+      // y para "pendiente de WhatsApp".
+      payment_proof_source: proofUrl ? "web" : null,
       eta_at: etaAt.toISOString(),
       notes: data.notes ?? null,
     };
@@ -356,9 +360,14 @@ export async function transitionOrder(input: {
     }
     // Rechazar el comprobante: limpiamos la URL para que el cliente
     // pueda reenviar uno nuevo (camino A o B) sin colisionar con el viejo.
+    // Reseteamos también `proof_reminder_sent_at` para que el cron emita un
+    // nuevo recordatorio si el cliente tarda en reenviar; y la fuente
+    // queda en null hasta que llegue el proof nuevo.
     if (toStatus === "payment_rejected") {
       update.needs_proof = true;
       update.payment_proof_url = null;
+      update.proof_reminder_sent_at = null;
+      update.payment_proof_source = null;
     }
 
     const { error: updateErr } = await supabaseAdmin
@@ -378,9 +387,9 @@ export async function transitionOrder(input: {
     if (eventErr) throw eventErr;
 
     try {
-      await sendOrderStatusTemplate(orderId, toStatus);
+      await sendOrderUpdate(orderId, toStatus);
     } catch (err) {
-      console.error("sendOrderStatusTemplate errored", err);
+      console.error("sendOrderUpdate errored", err);
     }
 
     revalidatePath("/pedidos");

@@ -1,7 +1,7 @@
 import "server-only";
 
+import { sendOrderDelayApology } from "@/features/notifications/send-order-update";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { sendTemplate } from "@/features/whatsapp/sender";
 
 export interface RunDelayAlertsResult {
   ok: boolean;
@@ -70,13 +70,14 @@ export async function runDelayAlerts(): Promise<RunDelayAlertsResult> {
       // El flag delay_notified_at ya cumple la regla "una sola vez por pedido"
       // (PRD §F8). Si el send falla, NO revertimos: reintentos manuales por
       // otro camino. Logear y contar como error del batch.
-      const result = await sendTemplate({
-        to: phone,
-        templateKey: "delay_apology",
-      });
+      const result = await sendOrderDelayApology(row.id);
 
       if (!result.ok) {
-        console.error("[delay-alerts] sendTemplate failed", row.id, result.error);
+        console.error(
+          "[delay-alerts] sendOrderDelayApology failed",
+          row.id,
+          result.error,
+        );
         errors++;
       }
 

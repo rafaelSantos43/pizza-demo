@@ -1,6 +1,6 @@
 "use client";
 
-import { FileWarning } from "lucide-react";
+import { AlertTriangle, Clock, FileWarning } from "lucide-react";
 
 import { StatusBadge } from "@/components/dashboard/status-badge";
 import { Card } from "@/components/ui/card";
@@ -83,12 +83,48 @@ export function OrderCard({ order, onSelect }: OrderCardProps) {
         </span>
       </div>
 
-      {order.needs_proof ? (
-        <span className="inline-flex w-fit items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900">
-          <FileWarning className="size-3.5" />
-          Necesita comprobante
-        </span>
+      {order.needs_proof && order.status === "awaiting_payment" ? (
+        <ProofWaitingBadge createdAt={order.created_at} />
       ) : null}
     </Card>
+  );
+}
+
+// Gradación visual del tiempo que un pedido lleva sin comprobante:
+//   0–4 min  → amarillo "Necesita comprobante"
+//   5–29 min → naranja  "Esperando comprobante (N min)" — coincide con el
+//              recordatorio automático que dispara pg_cron a los 5 min
+//   30+ min  → rojo     "Sin comprobante hace N min" — señal al cajero de
+//              evaluar si abandona el pedido (no auto-cancel)
+// El reloj se evalúa al render. Realtime fuerza re-render cuando hay
+// cambios en orders; pedidos abandonados sin cambios pueden quedar con
+// minutos stale hasta el siguiente evento, riesgo aceptado para el MVP.
+function ProofWaitingBadge({ createdAt }: { createdAt: string }) {
+  const ageMin = Math.max(
+    0,
+    Math.floor((Date.now() - new Date(createdAt).getTime()) / 60_000),
+  );
+
+  if (ageMin >= 30) {
+    return (
+      <span className="inline-flex w-fit items-center gap-1 rounded-full bg-destructive/15 px-2 py-1 text-xs font-medium text-destructive">
+        <AlertTriangle className="size-3.5" />
+        Sin comprobante hace {ageMin} min
+      </span>
+    );
+  }
+  if (ageMin >= 5) {
+    return (
+      <span className="inline-flex w-fit items-center gap-1 rounded-full bg-orange-100 px-2 py-1 text-xs font-medium text-orange-900">
+        <Clock className="size-3.5" />
+        Esperando comprobante ({ageMin} min)
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex w-fit items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900">
+      <FileWarning className="size-3.5" />
+      Necesita comprobante
+    </span>
   );
 }
