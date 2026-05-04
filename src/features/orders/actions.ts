@@ -525,14 +525,17 @@ export async function assignDriver(input: {
       };
     }
 
-    // Guard: si se intenta asignar un driver, validar que existe
+    // Guard: si se intenta asignar un driver, validar que existe, está
+    // activo y su rol es 'driver'. La tabla correcta es `profiles` (no
+    // `staff` — esta query venía rota desde el guard original de 2026-04-18).
     if (driverId) {
       const { data: driver, error: driverErr } = await supabaseAdmin
-        .from("staff")
-        .select("id, role")
+        .from("profiles")
+        .select("id, role, active")
         .eq("id", driverId)
         .eq("role", "driver")
-        .single();
+        .eq("active", true)
+        .maybeSingle();
 
       if (driverErr || !driver) {
         return {
