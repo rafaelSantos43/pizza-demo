@@ -27,23 +27,35 @@ export function DriverOrdersList({
     const supabase = createClient();
     // Mantiene `realtime.setAuth` sincronizado con la sesión, incluyendo
     // refreshes de token durante turnos largos. Ver L05.
-    const detachAuthSync = attachRealtimeAuthSync(supabase);
-    const channel = supabase
-      .channel("driver-orders-feed")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "orders" },
-        () => {
-          startTransition(() => {
-            router.refresh();
-          });
-        },
-      )
-      .subscribe();
+    const authHandle = attachRealtimeAuthSync(supabase);
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let cancelled = false;
+
+    (async () => {
+      // Esperamos al setAuth inicial: si subscribimos antes, el canal
+      // se conecta como `anon`, RLS filtra todos los eventos
+      // silenciosamente y la lista no se actualiza en tiempo real.
+      await authHandle.ready;
+      if (cancelled) return;
+
+      channel = supabase
+        .channel("driver-orders-feed")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "orders" },
+          () => {
+            startTransition(() => {
+              router.refresh();
+            });
+          },
+        )
+        .subscribe();
+    })();
 
     return () => {
-      detachAuthSync();
-      supabase.removeChannel(channel);
+      cancelled = true;
+      authHandle.detach();
+      if (channel) supabase.removeChannel(channel);
     };
   }, [router]);
 

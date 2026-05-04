@@ -1,5 +1,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+export interface RealtimeAuthHandle {
+  // Resuelve cuando el setAuth inicial corrió (con o sin sesión válida).
+  // El caller debe `await` esto antes de `.subscribe()` para evitar
+  // que el canal se conecte como anon y RLS filtre los eventos.
+  ready: Promise<void>;
+  // Limpieza: desuscribe el listener de onAuthStateChange.
+  detach: () => void;
+}
+
 // Sincroniza el `access_token` de la sesión activa con el canal de
 // Realtime. Sin esto, los eventos de `postgres_changes` que pasan por
 // RLS dejan de llegar cuando Supabase refresca el token (turnos largos
@@ -9,7 +18,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 // de un useEffect) tenga control explícito del cleanup. La función
 // hace setAuth inicial + suscribe a onAuthStateChange y retorna una
 // función para deshacer.
-export function attachRealtimeAuthSync(supabase: SupabaseClient): () => void {
+export function attachRealtimeAuthSync(
+  supabase: SupabaseClient,
+): RealtimeAuthHandle {
   let cancelled = false;
 
   // setAuth inicial: usamos `refreshSession()` en lugar de `getSession()`
@@ -22,7 +33,7 @@ export function attachRealtimeAuthSync(supabase: SupabaseClient): () => void {
   // garantizando token vigente. Si el refresh_token también expiró,
   // session retorna null y la suscripción se queda sin auth (RLS bloquea
   // los events) — recuperable cuando el cajero re-haga login.
-  supabase.auth
+  const ready = supabase.auth
     .refreshSession()
     .then(({ data: { session } }) => {
       if (cancelled || !session) return;
@@ -45,8 +56,11 @@ export function attachRealtimeAuthSync(supabase: SupabaseClient): () => void {
     },
   );
 
-  return () => {
-    cancelled = true;
-    subscription.subscription.unsubscribe();
+  return {
+    ready,
+    detach: () => {
+      cancelled = true;
+      subscription.subscription.unsubscribe();
+    },
   };
 }

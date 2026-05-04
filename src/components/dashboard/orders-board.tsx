@@ -81,14 +81,15 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
     const supabase = createClient();
     // Mantiene `realtime.setAuth` sincronizado con la sesión, incluyendo
     // refreshes de token durante turnos largos. Ver L05.
-    const detachAuthSync = attachRealtimeAuthSync(supabase);
+    const authHandle = attachRealtimeAuthSync(supabase);
     let channel: ReturnType<typeof supabase.channel> | null = null;
     let cancelled = false;
 
     (async () => {
-      // Pequeño microtask para garantizar que el setAuth inicial del
-      // helper se haya enviado antes de subscribirse al canal.
-      await Promise.resolve();
+      // Esperamos al setAuth inicial: si subscribimos antes, el canal
+      // se conecta como `anon`, RLS filtra todos los eventos
+      // silenciosamente y el panel parece no tener Realtime.
+      await authHandle.ready;
       if (cancelled) return;
 
       channel = supabase
@@ -154,7 +155,7 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
 
     return () => {
       cancelled = true;
-      detachAuthSync();
+      authHandle.detach();
       if (channel) supabase.removeChannel(channel);
     };
   }, [router]);
