@@ -39,6 +39,79 @@
 
 ## Decisiones tomadas (log en orden cronológico inverso)
 
+### 2026-05-04 — Audio para el driver cuando se le asigna un pedido nuevo
+**Qué:** [src/components/dashboard/driver-orders-list.tsx](../src/components/dashboard/driver-orders-list.tsx) ahora reproduce un beep + toast persistente cuando un postgres_changes indica que un pedido pasó a estar asignado al driver que está mirando la vista. Se distinguen dos casos:
+- INSERT con `driver_id === viewerId` (raro hoy pero por completitud).
+- UPDATE donde `new.driver_id === viewerId AND old.driver_id !== viewerId` (transición desde no asignado u otro driver).
+
+Reusa `useAudioContext` y `ActivateAudioBanner` (los mismos del panel del cajero), gateados por `viewerRole === "driver"` para que el admin viendo la flota desde `/mensajeros` no oiga beeps por cada asignación ajena. `playBeep` está duplicado inline (15 líneas, DRY no justifica un helper compartido todavía).
+
+**Por qué:** el caso real del driver es estar mirando la vista en su celular esperando trabajo. Sin audio, tiene que estar revisando la pantalla constantemente; con audio, el celular lo avisa aunque esté guardado en el bolsillo.
+
+**Cómo aplica, decisiones no triviales:**
+- **Cambios de estado del pedido (preparing → ready → on_the_way → delivered) NO disparan beep.** Eso es información para cocina/cajero, no para el driver. El driver activa él mismo "Salgo" / "Entregado" — no necesita audio para eventos que él dispara.
+- **El admin viendo `/mensajeros` tab Flota NO oye beeps.** Filtrado por `viewerRole === "driver"`. Sin esto, sería ruido constante para el admin cuando hace asignaciones.
+- **Toast persistente con `duration: Infinity`** + botón "Visto". Igual patrón que el panel del cajero. El driver puede dejarlo y avanzar al pedido cuando pueda.
+- **`playBeep` duplicado** (no extraído a helper compartido): YAGNI. Solo 2 callsites; cuando aparezca un tercero se extrae.
+
+### 2026-05-04 — SMTP custom (Resend) para magic links del staff/drivers
+**Qué:** Custom SMTP habilitado en Supabase Studio del proyecto prod (`oqkhzqgvofqkjbgreoli`):
+- Provider: **Resend** (free tier sandbox: `onboarding@resend.dev`).
+- Sender: `Pizza Demo <onboarding@resend.dev>`.
+- Host: `smtp.resend.com:465`, Username: `resend`, Password: API key de Resend (guardada solo en Supabase, encriptada — no en `.env.local` ni en código).
+
+**Por qué:** los magic links del sender default de Supabase caen consistentemente en spam de Gmail (validado de forma empírica: matias no recibió ningún correo durante el debug del feature de drivers, todos al filtro). Gmail desconfía agresivamente del dominio compartido del default sender. Con Resend (incluso el sandbox `resend.dev`) los correos llegan al inbox principal en 1-3 segundos. Además, el rate limit pasa de 2 emails/h por usuario (default) a 30/h (custom SMTP) — clave para que el panel y los drivers no se bloqueen entre intentos.
+
+**Cómo aplica, decisiones no triviales:**
+- **Sandbox `onboarding@resend.dev` en lugar de dominio propio:** decisión de tiempo. El dominio propio (verificación SPF/DKIM/DMARC) requiere comprar dominio + esperar propagación de DNS. Sandbox sirve para validar el flujo HOY. Antes del primer pitch real con cliente debe migrarse a dominio propio porque "Pizza Demo <onboarding@resend.dev>" se ve poco profesional.
+- **API key NO se commitea.** Vive solo en Supabase Studio (encriptada). Si rota, se cambia ahí; el código no la toca.
+- **Magic link cross-device sigue NO funcionando:** Supabase usa PKCE → el code_verifier vive en cookies del browser que pidió el link. Si el cajero pide desde la PC y abre el correo desde el celular, el callback rechaza con "link expirado/inválido". Para producción real con cliente mayor, evaluar OTP de 6 dígitos en lugar de magic link. Documentado, no urgente para MVP.
+- **Resend free tier:** 3000 emails/mes, 100/día. Más que suficiente para single-tenant. Si se llena, upgrade es $20 USD/mes.
+
+### 2026-05-04 — fix `assignDriver` queryaba tabla equivocada (`staff` en lugar de `profiles`)
+**Qué:** [src/features/orders/actions.ts](../src/features/orders/actions.ts) `assignDriver` validaba el driver con `.from("staff")`, pero **no existe tabla `staff`** en el schema — la tabla es `profiles`. La query siempre fallaba con error de tabla no existente, el guard atrapaba el error y devolvía *"El domiciliario no existe o no tiene rol válido"* — haciendo imposible asignar cualquier driver desde el panel.
+
+Cambios:
+- `.from("staff")` → `.from("profiles")`.
+- Agregado `.eq("active", true)` para que drivers desactivados queden fuera del pool de asignación (consistente con `listActiveDrivers` y la decisión de banear+desactivar del 2026-05-04).
+- `.single()` → `.maybeSingle()` (no tira error si no hay match, deja al guard manejarlo limpio).
+
+**Por qué:** bug heredado del guard original que se agregó el 2026-04-18 ("Validar pago aprobado antes de asignar driver"). En ese momento se mencionó `staff` (probablemente nombre tentativo en la cabeza), nunca se cruzó contra el schema real. Pasó desapercibido porque tampoco había drivers reales para probar — empezó a doler hoy cuando Rafael intentó asignar a matias y nada funcionaba.
+
+**Cómo aplica:**
+- Validación funcional en prod: Rafael asignó 2 pedidos a matias después del fix. ✓
+- Lección para el futuro: cuando un guard rechace en producción, **antes** de asumir que el dato está mal, validar que la query esté correctamente formada contra el schema real. Tipos generados de `database.types.ts` lo habrían detectado en compilación; D13 (deuda técnica de tipos generados) sigue pendiente.
+
+### 2026-05-04 — fix Realtime: race condition entre `refreshSession()` y `.subscribe()`
+**Qué:** [src/lib/supabase/realtime-auth.ts](../src/lib/supabase/realtime-auth.ts) `attachRealtimeAuthSync` ahora retorna `{ ready: Promise<void>, detach: () => void }` en lugar de solo la función de cleanup. La promise resuelve cuando el `setAuth` inicial corrió. Los callers ([orders-board.tsx](../src/components/dashboard/orders-board.tsx) y [driver-orders-list.tsx](../src/components/dashboard/driver-orders-list.tsx)) ahora hacen `await authHandle.ready` antes de `.subscribe()`.
+
+**Por qué:** `refreshSession()` es una llamada HTTP (~100-500ms). El código previo solo esperaba un microtask (`await Promise.resolve()`) antes de subscribir, así que el canal se conectaba con `setAuth` aún no propagado. Sin JWT, Realtime aplica RLS contra rol `anon`, y las policies tipo `orders_staff_select using (is_staff())` filtran TODOS los eventos silenciosamente. Síntoma: el panel no se actualizaba en tiempo real en la primera carga; un F5 lo "arreglaba" porque el SDK ya tenía un access_token cacheado y el round-trip era casi inmediato.
+
+**Cómo aplica, decisiones no triviales:**
+- **No se cambió cómo se hace el `refreshSession()`** — sigue siendo el approach correcto (por ENGRAM 2026-04-30 "use refreshSession on mount"). Lo que se arregló es la sincronización con el subscribe.
+- **Cambio de contrato en `attachRealtimeAuthSync`:** de retornar `() => void` a retornar `{ ready, detach }`. Breaking change interno del helper. Todos los callers (2 hoy) actualizados en el mismo commit.
+- **El IIFE async dentro del useEffect ahora espera la promise** + chequea `cancelled` después del await. Si el componente desmonta antes del setAuth, no se subscribe. Sin esto habría memory leak por canales fantasma.
+- **Aplicó a ambos panels** (cajero y driver). Antes el driver tenía un `subscribe()` síncrono inmediato — vulnerable al mismo bug pero menos visible porque la lista del driver depende menos de eventos en tiempo real (los pedidos asignados son más estables).
+
+### 2026-05-04 — fix audio: rehydratación de localStorage no creaba el AudioContext
+**Qué:** [src/components/dashboard/use-audio-context.ts](../src/components/dashboard/use-audio-context.ts):
+- Helper `ensureCtx()` extraído (crea o devuelve cacheado).
+- `useEffect` que lee `pfd:audio-activated` de localStorage ahora **además** de marcar `isUnlocked=true`, llama `ensureCtx()` para crear el AudioContext.
+- `unlock()` ahora llama `ctx.resume()` si el ctx está en estado `suspended` (común en Safari/Chrome móvil).
+
+[src/components/dashboard/orders-board.tsx](../src/components/dashboard/orders-board.tsx) `playBeep` también llama `ctx.resume()` defensivamente al inicio.
+
+**Por qué:** dos bugs combinados que se manifestaban como "no suena el beep aunque el banner ya no aparece":
+1. El cajero que ya activó audio en una sesión previa entraba al panel, NO clickeaba (solo miraba esperando pedidos), llegaba un INSERT y el guard `if (audioCtxRef.current)` saltaba silenciosamente porque solo se había marcado el flag en localStorage; el ctx mismo nunca se creaba (solo lo creaba el listener pasivo `pointerdown`/`keydown`, que nunca se disparaba si no había gesto).
+2. Aún con el ctx creado, en móvil podía quedar `suspended` tras inactividad larga, y `osc.start()` corría sin emitir audio.
+
+Validado en prod insertando 4 pedidos desde un script y confirmando que el beep + toast se disparan correctamente al menos en la sesión donde el cajero ya hizo gesto previo.
+
+**Cómo aplica:**
+- **Pre-existente desde el commit `f7c7d70`** (persist activation flag en localStorage) — el shortcut "saltar el banner tras F5" introdujo el bug porque la lógica para llegar a tener el ctx creado seguía dependiendo del listener pasivo.
+- **`resume()` defensivo en `playBeep`:** seguro de bajo costo, no-op si state=running. Cubre el caso del laptop suspendido + reanudado.
+- **No requirió cambio del banner ni de cómo se persiste el flag.** El fix está completamente del lado de hidratación.
+
 ### 2026-05-04 — Gestión de mensajeros (drivers): ruta admin `/mensajeros`, login unificado magic link, ban + signOut global al desactivar
 **Qué:**
 - **Schema:** [supabase/migrations/0008_profiles_phone.sql](../supabase/migrations/0008_profiles_phone.sql) agrega `profiles.phone text` (nullable) con CHECK E.164 idempotente (drop+create del constraint, ya que Postgres no soporta `add constraint if not exists`). [supabase/migrations/0009_profiles_self_update_lock_role.sql](../supabase/migrations/0009_profiles_self_update_lock_role.sql) endurece `profiles_self_update`: el `with check` ahora exige `role` y `active` iguales a los valores actuales del usuario, cerrando la ventana de privilege escalation (un driver autenticado podía hacer `update profiles set role='admin'` desde el browser hasta esta migration).
