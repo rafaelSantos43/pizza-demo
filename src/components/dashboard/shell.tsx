@@ -34,28 +34,29 @@ interface NavItem {
   href: string;
   label: string;
   icon: typeof ClipboardList;
-  roles?: StaffRole[];
 }
 
-const NAV_ITEMS: NavItem[] = [
-  {
-    href: "/pedidos",
-    label: "Pedidos",
-    icon: ClipboardList,
-    roles: ["admin", "cashier", "kitchen"],
-  },
-  { href: "/mensajero", label: "Mensajero", icon: Bike },
-  { href: "/menu", label: "Menú", icon: Pizza, roles: ["admin"] },
-  {
-    href: "/settings",
-    label: "Configuración",
-    icon: Settings,
-    roles: ["admin"],
-  },
-];
+// El nav depende del rol: el driver tiene su propia vista operativa
+// (`/mensajero`); el admin gestiona la flota desde `/mensajeros`; cashier y
+// kitchen no necesitan ver ninguna de las dos.
+function getNavItems(role: StaffRole): NavItem[] {
+  if (role === "driver") {
+    return [{ href: "/mensajero", label: "Mensajero", icon: Bike }];
+  }
 
-function visibleNav(role: StaffRole) {
-  return NAV_ITEMS.filter((it) => !it.roles || it.roles.includes(role));
+  const items: NavItem[] = [
+    { href: "/pedidos", label: "Pedidos", icon: ClipboardList },
+  ];
+
+  if (role === "admin") {
+    items.push(
+      { href: "/mensajeros", label: "Mensajeros", icon: Bike },
+      { href: "/menu", label: "Menú", icon: Pizza },
+      { href: "/settings", label: "Configuración", icon: Settings },
+    );
+  }
+
+  return items;
 }
 
 function initials(name: string | null, email: string | null) {
@@ -146,7 +147,7 @@ interface DashboardShellProps {
 export function DashboardShell({ staff, children }: DashboardShellProps) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const items = visibleNav(staff.role);
+  const items = getNavItems(staff.role);
 
   return (
     <div className="flex min-h-svh w-full bg-muted/20">

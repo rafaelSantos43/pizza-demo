@@ -10,23 +10,21 @@ export const metadata: Metadata = {
 };
 
 export default async function MensajeroPage() {
-  // En v1 no restringimos por rol: cualquier staff puede ver el estado de la flota.
-  const staff = await requireStaff();
+  // /mensajero es la vista operativa del domiciliario. Admin ve la flota
+  // desde /mensajeros (gestión + pedidos por mensajero).
+  const staff = await requireStaff({ roles: ["driver"] });
 
-  const driverFilter = staff.role === "driver" ? staff.id : null;
-  const orders = await listOrdersForDriver(driverFilter);
-
-  const isDriver = staff.role === "driver";
-  const title = isDriver ? "Tus pedidos asignados" : "Mensajero";
-  const subtitle = isDriver
-    ? "Solo tú ves estos pedidos"
-    : "Pedidos en ruta — todos los domiciliarios";
+  const orders = await listOrdersForDriver(staff.id);
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="font-serif text-3xl text-foreground">{title}</h1>
-        <p className="text-sm text-muted-foreground">{subtitle}</p>
+        <h1 className="font-serif text-3xl text-foreground">
+          Tus pedidos asignados
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Solo tú ves estos pedidos
+        </p>
       </header>
 
       {orders.length === 0 ? (
@@ -36,9 +34,7 @@ export default async function MensajeroPage() {
             Sin pedidos en ruta
           </p>
           <p className="max-w-xs text-sm text-muted-foreground">
-            {staff.role === "driver"
-              ? "Cuando el cajero te asigne un pedido aparecerá aquí."
-              : "Aún no hay pedidos asignados a ningún domiciliario."}
+            Cuando el cajero te asigne un pedido aparecerá aquí.
           </p>
         </div>
       ) : (

@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Permite acceder al dev server desde la red local (móvil en la misma WiFi
+  // apuntando a la IP de la Mac). Sin esto Next bloquea HMR y warnings.
+  allowedDevOrigins: ["10.2.20.81"],
   experimental: {
     serverActions: {
       // Subimos a 6 MB para que quepa un comprobante de 5 MB (MAX_PROOF_BYTES)

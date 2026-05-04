@@ -4,8 +4,13 @@ import { redirect } from "next/navigation";
 
 import { getCurrentStaff, type CurrentStaff, type StaffRole } from "./queries";
 
-// Usa /pedidos como home del staff cuando el rol no califica; no tenemos
-// /403 dedicado en v1 y /pedidos es accesible para todos los roles.
+// Manda al staff a su "home" cuando el rol no califica para una ruta.
+// No tenemos /403 dedicado en v1: el driver tiene su propia operativa
+// en /mensajero, el resto comparte /pedidos.
+function homeForRole(role: StaffRole): string {
+  return role === "driver" ? "/mensajero" : "/pedidos";
+}
+
 export async function requireStaff(opts?: {
   roles?: StaffRole[];
 }): Promise<CurrentStaff> {
@@ -14,7 +19,7 @@ export async function requireStaff(opts?: {
     redirect("/login");
   }
   if (opts?.roles && opts.roles.length > 0 && !opts.roles.includes(staff.role)) {
-    redirect("/pedidos");
+    redirect(homeForRole(staff.role));
   }
   return staff;
 }
