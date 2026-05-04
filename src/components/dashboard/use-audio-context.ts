@@ -48,26 +48,40 @@ export function useAudioContext(): UseAudioContextResult {
   const ctxRef = useRef<AudioContext | null>(null);
   const [isUnlocked, setIsUnlocked] = useState(false);
 
-  function unlock(): void {
-    if (ctxRef.current) {
-      setIsUnlocked(true);
-      persistStoredFlag();
-      return;
-    }
+  function ensureCtx(): AudioContext | null {
+    if (ctxRef.current) return ctxRef.current;
     try {
       ctxRef.current = new AudioContext();
-      setIsUnlocked(true);
-      persistStoredFlag();
+      return ctxRef.current;
     } catch {
       ctxRef.current = null;
+      return null;
     }
   }
 
-  // Restaura el flag desde localStorage tras hidratación. Hay un flicker
-  // brevísimo del banner en F5 si el cajero ya había activado, aceptado
-  // para evitar mismatch de hidratación SSR ↔ cliente.
+  function unlock(): void {
+    const ctx = ensureCtx();
+    // En algunos browsers (Safari, Chrome móvil) el ctx puede crearse
+    // en estado `suspended`. Hay que llamar resume() dentro del gesto
+    // del usuario para que reproduzca audio después.
+    if (ctx && ctx.state === "suspended") {
+      void ctx.resume();
+    }
+    setIsUnlocked(true);
+    persistStoredFlag();
+  }
+
+  // Restaura el flag desde localStorage tras hidratación. CRUCIAL: además
+  // de marcar isUnlocked, creamos el ctx ya. Sin esto, el cajero que ya
+  // había activado audio en una sesión previa entra al panel, NO clickea
+  // (solo mira esperando pedidos), llega un INSERT y el beep falla
+  // silenciosamente porque ctxRef.current sigue null. El ctx puede
+  // quedar `suspended` hasta el primer gesto pasivo del cajero.
   useEffect(() => {
-    if (readStoredFlag()) setIsUnlocked(true);
+    if (readStoredFlag()) {
+      ensureCtx();
+      setIsUnlocked(true);
+    }
   }, []);
 
   useEffect(() => {

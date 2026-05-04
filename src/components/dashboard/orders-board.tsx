@@ -45,7 +45,15 @@ function formatHour(iso: string): string {
 
 // Beep generado con Web Audio API: ~350ms a 880Hz con envelope para no asustar.
 // Sin archivos en /public; falla silenciosa si el browser bloquea el contexto.
+//
+// resume() defensivo: si el ctx vino de localStorage o estuvo dormido tras
+// inactividad larga, queda en estado `suspended` y `osc.start()` corre sin
+// emitir audio. El resume() es no-bloqueante; en el caso normal (state=running)
+// es no-op y el sonido se reproduce inmediatamente.
 function playBeep(ctx: AudioContext): void {
+  if (ctx.state === "suspended") {
+    void ctx.resume();
+  }
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
   osc.type = "sine";
