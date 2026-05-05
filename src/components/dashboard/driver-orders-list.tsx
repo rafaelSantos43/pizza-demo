@@ -60,6 +60,18 @@ export function DriverOrdersList({
     let channel: ReturnType<typeof supabase.channel> | null = null;
     let cancelled = false;
 
+    // Un pedido es "actuable" para el driver cuando está asignado a él
+    // y su status es ready (recoger) u on_the_way (entregar). La vista
+    // del driver filtra exactamente eso, así que el beep dispara solo
+    // cuando un pedido APARECE en su lista — no cuando el admin lo
+    // pre-asigna en preparing (eso es info de gestión, no operación).
+    function isActionableFor(
+      row: { driver_id: string | null; status: string } | null,
+    ): boolean {
+      if (!row || row.driver_id !== viewerId) return false;
+      return row.status === "ready" || row.status === "on_the_way";
+    }
+
     function notifyAssigned(orderId: string): void {
       if (audioCtxRef.current) {
         try {
@@ -69,7 +81,7 @@ export function DriverOrdersList({
         }
       }
       toast(
-        "🛵 Te asignaron un pedido",
+        "🛵 Pedido listo para recoger",
         {
           id: orderId,
           duration: Infinity,
@@ -94,8 +106,12 @@ export function DriverOrdersList({
           "postgres_changes",
           { event: "INSERT", schema: "public", table: "orders" },
           (payload) => {
-            const row = payload.new as { id: string; driver_id: string | null };
-            if (isDriver && row.driver_id === viewerId) {
+            const row = payload.new as {
+              id: string;
+              driver_id: string | null;
+              status: string;
+            };
+            if (isDriver && isActionableFor(row)) {
               notifyAssigned(row.id);
             }
             startTransition(() => router.refresh());
@@ -105,15 +121,33 @@ export function DriverOrdersList({
           "postgres_changes",
           { event: "UPDATE", schema: "public", table: "orders" },
           (payload) => {
-            const newRow = payload.new as { id: string; driver_id: string | null };
-            const oldRow = payload.old as { driver_id: string | null };
-            // Solo notificar transición a "asignado a mí" — no en cada
-            // update de status del pedido, no si ya estaba mío antes.
-            const becameMine =
-              newRow.driver_id === viewerId &&
-              oldRow.driver_id !== viewerId;
-            if (isDriver && becameMine) {
+            const newRow = payload.new as {
+              id: string;
+              driver_id: string | null;
+              status: string;
+            };
+            const oldRow = payload.old as {
+              driver_id: string | null;
+              status: string;
+            };
+            // Notificar solo en la transición "no actuable → actuable":
+            //   - Asignación con status ya ready/on_the_way.
+            //   - Cocina marca ready y yo ya estaba pre-asignado.
+            // No suena si ya era mío antes con el mismo status, ni
+            // cuando yo mismo toco "Salgo" (ready → on_the_way ambos
+            // son actuables, no hay transición).
+            const becameActionable =
+              isActionableFor(newRow) && !isActionableFor(oldRow);
+            // Y descartar toast en la transición opuesta — pedido salió
+            // de la lista actuable (admin reasignó a otro, yo entregué,
+            // pedido cancelado).
+            const becameNotActionable =
+              !isActionableFor(newRow) && isActionableFor(oldRow);
+            if (isDriver && becameActionable) {
               notifyAssigned(newRow.id);
+            }
+            if (isDriver && becameNotActionable) {
+              toast.dismiss(newRow.id);
             }
             startTransition(() => router.refresh());
           },

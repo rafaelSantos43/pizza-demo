@@ -116,6 +116,7 @@ export async function listActiveOrders(): Promise<OrderSummary[]> {
 
 export async function listOrdersForDriver(
   driverId: string | null,
+  options: { deliverableOnly?: boolean } = {},
 ): Promise<OrderSummary[]> {
   const supabase = await createClient();
   const base = supabase
@@ -123,9 +124,19 @@ export async function listOrdersForDriver(
     .select(ACTIVE_ORDER_SELECT)
     .not("status", "in", "(delivered,cancelled)");
 
+  // `deliverableOnly`: solo pedidos en los que el driver puede actuar
+  // (ready = recoger, on_the_way = entregar). Excluye payment_approved y
+  // preparing aunque ya estén asignados — la pre-asignación del admin es
+  // info de gestión, no compromiso operativo. El driver ve el pedido
+  // recién cuando cocina lo marca listo. Admin viendo /mensajeros tab
+  // Flota usa el default (sin filtro) para ver el pipeline completo.
+  const withStatus = options.deliverableOnly
+    ? base.in("status", ["ready", "on_the_way"])
+    : base;
+
   const filtered = driverId === null
-    ? base.not("driver_id", "is", null)
-    : base.eq("driver_id", driverId);
+    ? withStatus.not("driver_id", "is", null)
+    : withStatus.eq("driver_id", driverId);
 
   const { data, error } = await filtered
     .order("eta_at", { ascending: true, nullsFirst: false })

@@ -107,7 +107,15 @@ export function DriverOrderCard({ order, viewerRole }: DriverOrderCardProps) {
 
       <div className="flex items-start justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <StatusBadge status={order.status} delayed={order.delayed} />
+          {/*
+            Driver: por filtro de la query solo ve ready/on_the_way; el
+            badge de estado es redundante (el botón visible — "Salgo" o
+            "Entregado" — ya implica el estado).
+            Admin viendo flota: sí lo necesita para ver pipeline.
+          */}
+          {viewerRole !== "driver" ? (
+            <StatusBadge status={order.status} delayed={order.delayed} />
+          ) : null}
           {eta ? (
             <span className="text-sm text-muted-foreground">
               Llega {eta}

@@ -14,7 +14,9 @@ export default async function MensajeroPage() {
   // desde /mensajeros (gestión + pedidos por mensajero).
   const staff = await requireStaff({ roles: ["driver"] });
 
-  const orders = await listOrdersForDriver(staff.id);
+  // El driver solo ve pedidos en los que puede actuar (ready u on_the_way).
+  // Admin viendo /mensajeros sí ve el pipeline completo (sin filtro).
+  const orders = await listOrdersForDriver(staff.id, { deliverableOnly: true });
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
