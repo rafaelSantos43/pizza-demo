@@ -112,6 +112,37 @@ export async function createOrder(
   }
   const { customerId, tokenId } = tokenResult;
 
+  // L08 — anti-ambigüedad de comprobante: si el customer tiene CUALQUIER
+  // pedido activo con `needs_proof=true`, bloqueamos la creación de un
+  // segundo. Razón: el camino B (cliente manda imagen por WhatsApp)
+  // asocia la imagen al pedido pendiente, y con 2 pedidos pendientes la
+  // asociación se vuelve ambigua. Una regla "1 pedido pendiente por
+  // teléfono a la vez" cierra el problema en origen.
+  //
+  // NO marcamos el token todavía: el cliente puede reusar el mismo link
+  // después de mandar el comprobante o pagar el pedido anterior.
+  const { data: pendingProofs, error: pendingErr } = await supabaseAdmin
+    .from("orders")
+    .select("id")
+    .eq("customer_id", customerId)
+    .eq("needs_proof", true)
+    .not("status", "in", "(delivered,cancelled)")
+    .limit(1);
+  if (pendingErr) {
+    console.error("createOrder pending-proofs check failed", pendingErr);
+    return {
+      ok: false,
+      error: "No pudimos crear tu pedido. Intenta de nuevo en un momento.",
+    };
+  }
+  if (pendingProofs && pendingProofs.length > 0) {
+    return {
+      ok: false,
+      error:
+        "Tienes un pedido pendiente de comprobante. Mándalo por WhatsApp y vuelve a intentar.",
+    };
+  }
+
   // L01: marcar el token usado ANTES de cualquier INSERT. Si la cascada
   // falla a mitad, el cliente NO puede reintentar con el mismo link y
   // generar un duplicado en el panel. La alternativa "marcar al final"
