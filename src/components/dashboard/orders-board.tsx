@@ -111,29 +111,35 @@ export function OrdersBoard({ initial, staff, drivers }: OrdersBoardProps) {
               status: string;
               total_cents: number;
               created_at: string;
+              payment_method: string;
             };
-            if (ALERTING_STATUSES.has(row.status)) {
-              if (audioCtxRef.current) {
-                try {
-                  playBeep(audioCtxRef.current);
-                } catch {
-                  // contexto cerrado o suspendido: ignorar
-                }
+            // Cualquier INSERT en `orders` es un pedido nuevo del cliente.
+            // Cash entra directo a `preparing`; transferencia/Nequi/Llave
+            // a `awaiting_payment`. El cajero necesita oír el beep en
+            // ambos casos. ALERTING_STATUSES sigue rigiendo el dismissal
+            // del toast en el handler de UPDATE.
+            if (audioCtxRef.current) {
+              try {
+                playBeep(audioCtxRef.current);
+              } catch {
+                // contexto cerrado o suspendido: ignorar
               }
-              const hour = formatHour(row.created_at);
-              const tag = hour ? ` · ${hour}` : "";
-              toast(
-                `🍕 Pedido nuevo · ${formatCOP(row.total_cents)}${tag}`,
-                {
-                  id: row.id,
-                  duration: Infinity,
-                  action: {
-                    label: "Visto",
-                    onClick: () => toast.dismiss(row.id),
-                  },
-                },
-              );
             }
+            const hour = formatHour(row.created_at);
+            const hourTag = hour ? ` · ${hour}` : "";
+            const actionTag =
+              row.payment_method === "cash" ? "Efectivo" : "Validar pago";
+            toast(
+              `🍕 Pedido nuevo · ${formatCOP(row.total_cents)}${hourTag} · ${actionTag}`,
+              {
+                id: row.id,
+                duration: Infinity,
+                action: {
+                  label: "Visto",
+                  onClick: () => toast.dismiss(row.id),
+                },
+              },
+            );
             startTransition(() => router.refresh());
           },
         )
