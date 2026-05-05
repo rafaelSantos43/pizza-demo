@@ -39,6 +39,78 @@
 
 ## Decisiones tomadas (log en orden cronológico inverso)
 
+### 2026-05-05 — Hardening pre-pitch: 3 ataques cubiertos (duplicación, asociación de comprobante, concurrencia)
+**Qué:** ejercicio de "ataques al sistema" durante el smoke real, con 3 fixes específicos en commits aislados:
+
+**Ataque 1 — Duplicación de pedidos (commit `10e3a06`):**
+- [src/features/order-tokens/mark-used.ts](../src/features/order-tokens/mark-used.ts) `markTokenUsed` ahora retorna `boolean`. Hace UPDATE atómico con `.is("used_at", null)` + `.select("id")` para verificar `affected_rows`. Devuelve `true` si esta llamada marcó el token, `false` si otra request concurrente ya lo había marcado.
+- [src/features/orders/actions.ts](../src/features/orders/actions.ts) `createOrder` chequea el booleano y aborta si es `false` con mensaje *"Este enlace ya fue usado"*.
+- Cierra la race condition entre `verifyToken` (SELECT) y `markTokenUsed` (UPDATE) cuando llegan 2 requests simultáneas — antes ambas pasaban `verifyToken` (porque el commit aún no se había hecho), ambas llamaban `markTokenUsed`, y aunque el UPDATE solo afectaba 1 fila, la otra request continuaba y creaba un pedido duplicado.
+- UI ya tenía `disabled={submitting}` en el botón de checkout — el fix backend cubre la ventana de race en server side.
+
+**Ataque 2 — Asociación de comprobante (commit `374678a`):**
+- [src/features/orders/actions.ts](../src/features/orders/actions.ts) `createOrder` chequea **antes** de marcar el token, si el `customer_id` tiene CUALQUIER pedido activo con `needs_proof=true` (status no terminal). Si sí, aborta con *"Tienes un pedido pendiente de comprobante. Mándalo por WhatsApp y vuelve a intentar."*
+- El token NO se marca como usado en este path → el cliente puede reusar el mismo link después de mandar el comprobante anterior.
+- Cierra L08 del audit (asociación ambigua del camino B): si el cliente tenía 2 pedidos pendientes de comprobante y mandaba 1 imagen por WhatsApp, el webhook la asociaba al "más reciente" — comportamiento incorrecto si el cliente quería pagar el 1ro.
+
+**Ataque 4 — Concurrencia en transiciones (commit `10e3a06`):**
+- [src/features/orders/actions.ts](../src/features/orders/actions.ts) `transitionOrder` UPDATE ahora incluye `.eq("status", current.status)` como guard atómico. Si otro operador cambió el estado entre `loadOrderState` y el UPDATE, `affected_rows = 0` → devuelve *"El pedido cambió de estado mientras lo actualizabas. Recarga para ver el estado actual."*
+- Optimistic concurrency control clásico, sin overhead de locks.
+
+**Por qué:** un audit externo (no del proyecto, traído por Rafael) listó 6 ataques contra el sistema. De los 6, los 3 priorizados por ROI alto pre-pitch fueron 1, 2 y 4. Los otros 3 quedan documentados como deuda consciente para post-pitch:
+- **Ataque 3 (Caída de WhatsApp):** mitigación = botón "Generar link manual" en panel del cajero. Diseño documentado en LAUNCH_CHECKLIST opción B; UI no construida.
+- **Ataque 5 (ETA inexacto):** mitigación parcial existente (F8 alerta proactiva). ETA dinámico por backlog se decidirá con datos reales del piloto, no antes.
+- **Ataque 6 (Multi-tenant):** preparación reservada para cuando aparezca el 2do cliente; agregar `tenant_id` desde ya costaría 1h pero no aporta hasta entonces (YAGNI).
+
+**Cómo aplica, decisiones no triviales:**
+- **`markTokenUsed` cambió firma** (`Promise<void>` → `Promise<boolean>`). Solo `createOrder` lo llama; cambio chico, cero callers a actualizar fuera de ese archivo.
+- **El check de Ataque 2 va ANTES de markTokenUsed**: deliberado. Si bloqueamos al cliente, el token sigue válido para reusar después. Si lo marcáramos primero, el cliente perdería el link y tendría que pedir nuevo via WhatsApp greet — fricción innecesaria.
+- **`needs_proof=true` como criterio de bloqueo**: cubre tanto pedidos en `awaiting_payment` (sin comprobante todavía) como en `payment_rejected` (comprobante rechazado, debe reenviar). Excluye pedidos ya entregados/cancelados.
+- **Si el cliente subió comprobante en la web (camino A)**, `needs_proof=false` desde el INSERT → no bloquea siguientes pedidos. La regla solo aplica al camino B (esperando imagen por WhatsApp).
+- **`transitionOrder` no maneja conflictos en `order_status_events`**: si el UPDATE pasa pero el INSERT del evento falla, queda inconsistencia (try/catch general). Para v2: hacerlos transaccionales con un RPC. No urgente — el trade-off se aceptó porque la frecuencia esperada es muy baja.
+
+**Cómo se valida:**
+- Manual: hacer 2 pedidos seguidos con la misma phone sin comprobante → segundo bloqueado con mensaje claro.
+- Manual: doble-click en "Confirmar pedido" → solo 1 pedido aparece en el panel.
+- Manual: 2 pestañas del panel abiertas, click simultáneo en "Listo" → 1 transición pasa, la otra ve toast de error.
+- No agregamos tests automatizados (el código es lineal y los casos son fáciles de verificar manualmente; D03/D04 del audit cubre el plan de tests más amplio).
+
+### 2026-05-05 — fix beep panel: cualquier INSERT dispara alerta, no solo `new`/`awaiting_payment`
+**Qué:** [src/components/dashboard/orders-board.tsx](../src/components/dashboard/orders-board.tsx) `INSERT` handler ya no filtra por `ALERTING_STATUSES`. Cualquier pedido nuevo dispara beep + toast persistente. Toast diferencia la acción esperada del cajero según `payment_method`:
+- `cash` → *"🍕 Pedido nuevo · $X · 09:30 · Efectivo"*
+- `bancolombia/nequi/llave` → *"🍕 Pedido nuevo · $X · 09:30 · Validar pago"*
+
+`ALERTING_STATUSES` ahora se usa solo en el handler `UPDATE` (dismissal del toast cuando el cajero avanza el estado fuera del set) y en `useReplayPendingOrderToasts` (replay post-F5 solo de pedidos aún pendientes de atención).
+
+**Por qué:** durante el smoke E2E real (paso 2 del plan de testing) Rafael creó un pedido en efectivo desde el celular. El pedido apareció en el panel del desktop pero **sin beep ni toast** — el cajero pudo haberlo perdido. Causa: el filtro original heredado del PRD §F4 (*"alert en new o awaiting_payment"*) no contemplaba que cash entra directo a `preparing`. Resultado: cash orders eran invisibles auditivamente. Bug de diseño, no de implementación.
+
+**Cómo aplica, decisiones no triviales:**
+- **Diferenciar el toast con la acción esperada (Efectivo / Validar pago):** decisión UX, no técnica. Le da al cajero una pista inmediata de qué hacer sin abrir el detalle. Particularmente útil en hora pico cuando llegan varios pedidos juntos.
+- **El badge `ALERTING_STATUSES` se mantiene** para el dismissal del UPDATE handler porque sigue siendo correcto: cuando el cajero avanza el pedido a `preparing` (transferencia ya aprobada) o a `ready`, la alerta original ya cumplió su propósito y el toast desaparece solo.
+- **`useReplayPendingOrderToasts` no se cambió:** el replay tras F5 solo reconstruye toasts para pedidos en `new`/`awaiting_payment` porque solo esos siguen "pendientes de la atención del cajero". Un pedido en `preparing` ya pasó por su mano, no es ruido replicarlo.
+- **Cash orders ahora tienen toast persistente** que el cajero debe descartar manualmente (botón "Visto") o avanzando el pedido a ready. La fricción es mínima y consistente con el patrón de transferencia.
+
+### 2026-05-05 — Vista del driver: solo pedidos actuables, sin StatusBadge, beep al "aparecer en lista"
+**Qué:** rework UX de la vista `/mensajero` y del listener Realtime asociado. Cambios:
+- [src/features/orders/queries.ts](../src/features/orders/queries.ts) `listOrdersForDriver(driverId, options)` acepta `{ deliverableOnly?: boolean }`. Cuando `true`, filtra `status IN (ready, on_the_way)`. Default `false` preserva el caso del admin viendo `/mensajeros` tab Flota (ve el pipeline completo de cada driver).
+- [app/(dashboard)/mensajero/page.tsx](../app/(dashboard)/mensajero/page.tsx) pasa `deliverableOnly: true`.
+- [src/components/dashboard/driver-order-card.tsx](../src/components/dashboard/driver-order-card.tsx) oculta `<StatusBadge>` cuando `viewerRole === "driver"`. Todos los pedidos visibles son actuables, el botón visible (Salgo / Entregado) ya implica el estado.
+- [src/components/dashboard/driver-orders-list.tsx](../src/components/dashboard/driver-orders-list.tsx) realtime listener ahora dispara beep + toast solo en transición *"no actuable → actuable"*: asignación con status ya `ready`/`on_the_way`, o `preparing → ready` cuando el driver ya estaba pre-asignado. Y descarta toast en transición opuesta (admin reasignó a otro, driver completó entrega, cancelación).
+
+**Por qué:** Rafael notó durante el smoke que la pre-asignación del admin durante `preparing` confundía al driver: aparecía un pedido en su lista que él no podía tocar (sin botones habilitados), creando una "promesa" que el admin podía romper en cualquier momento (reasignar). El instinto del usuario fue claro:
+
+> *"Hasta que el pedido esté `ready`, no es de NADIE realmente. La pre-asignación del admin es una decisión interna de gestión, no un compromiso al driver."*
+
+Esto hace coincidir el modelo mental del driver con la realidad operativa: el driver ve algo en su lista = es suyo y puede actuar.
+
+**Cómo aplica, decisiones no triviales:**
+- **NO se construyó "pipeline futuro" para el driver.** Considerado y descartado: si mostramos los pedidos en preparing como "lo que viene", creamos compromiso falso (admin puede reasignar) y confunde al driver. Mejor cero información que información ambigua. Cuando el local crezca a 5+ drivers, reconsiderar.
+- **Admin sigue pudiendo asignar desde `preparing`.** El backend no cambió — la pre-asignación funciona como antes, simplemente el driver no lo ve hasta que esté ready. Útil para la coordinación interna del admin: *"este pedido va para Mario cuando salga de cocina"*.
+- **El admin viendo `/mensajeros` tab Flota sí ve TODO el pipeline** (sin filtro). Distinción intencional: admin necesita visibilidad completa, driver necesita simplicidad.
+- **`StatusBadge` oculto solo para `viewerRole === "driver"`:** si el driver entra a `/mensajero` ve cards limpias sin badge; si el admin reusa el componente en la flota, sigue viendo el badge. Mismo componente, comportamiento condicional.
+- **El toast del driver dice "🛵 Pedido listo para recoger"** (texto único). Antes decía "Te asignaron un pedido", lo cual era impreciso porque ahora el beep dispara también cuando un pedido pre-asignado pasa a ready (el driver no fue "asignado" en ese momento, pero el efecto operativo es el mismo: aparece algo en su lista que puede recoger).
+- **`isActionableFor(row)` helper interno** evita duplicar la lógica `driver_id === viewerId AND status in (ready, on_the_way)` en INSERT, UPDATE, y dismissal. Pure function, fácil de testear si se decide agregar tests.
+
 ### 2026-05-04 — Audio para el driver cuando se le asigna un pedido nuevo
 **Qué:** [src/components/dashboard/driver-orders-list.tsx](../src/components/dashboard/driver-orders-list.tsx) ahora reproduce un beep + toast persistente cuando un postgres_changes indica que un pedido pasó a estar asignado al driver que está mirando la vista. Se distinguen dos casos:
 - INSERT con `driver_id === viewerId` (raro hoy pero por completitud).
