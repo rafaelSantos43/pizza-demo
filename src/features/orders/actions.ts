@@ -116,13 +116,26 @@ export async function createOrder(
   // falla a mitad, el cliente NO puede reintentar con el mismo link y
   // generar un duplicado en el panel. La alternativa "marcar al final"
   // dejaba la ventana abierta.
+  //
+  // Concurrencia: `markTokenUsed` retorna false si OTRA request ya lo
+  // marcó entre nuestro verifyToken y este update. Esto cubre el doble
+  // submit del cliente (network lento + segundo click): aunque ambos
+  // requests pasen verifyToken con `used_at=null`, solo uno gana el
+  // UPDATE atómico; el otro aborta acá sin crear pedido duplicado.
+  let markedThisCall = false;
   try {
-    await markTokenUsed(tokenId);
+    markedThisCall = await markTokenUsed(tokenId);
   } catch (err) {
     console.error("markTokenUsed failed", err);
     return {
       ok: false,
       error: "No pudimos crear tu pedido. Pide un nuevo link por WhatsApp.",
+    };
+  }
+  if (!markedThisCall) {
+    return {
+      ok: false,
+      error: "Este enlace ya fue usado. Pide un nuevo link por WhatsApp.",
     };
   }
 
@@ -437,11 +450,26 @@ export async function transitionOrder(input: {
       update.payment_proof_source = null;
     }
 
-    const { error: updateErr } = await supabaseAdmin
+    // Concurrencia optimista: el UPDATE incluye guard sobre `status` igual
+    // al que leímos. Si otro operador (cajero/cocina/driver) cambió el
+    // estado entre `loadOrderState` y este update, `affected_rows = 0` y
+    // devolvemos error en lugar de pisar su cambio. Cubre doble-click
+    // del mismo operador, dos operadores compartiendo el panel, y
+    // race condition driver+cajero clickeando casi en simultáneo.
+    const { data: updated, error: updateErr } = await supabaseAdmin
       .from("orders")
       .update(update)
-      .eq("id", orderId);
+      .eq("id", orderId)
+      .eq("status", current.status)
+      .select("id");
     if (updateErr) throw updateErr;
+    if (!updated || updated.length === 0) {
+      return {
+        ok: false,
+        error:
+          "El pedido cambió de estado mientras lo actualizabas. Recarga para ver el estado actual.",
+      };
+    }
 
     const { error: eventErr } = await supabaseAdmin
       .from("order_status_events")
