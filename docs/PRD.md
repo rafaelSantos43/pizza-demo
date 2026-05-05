@@ -140,10 +140,12 @@ Lista en tiempo real (Supabase Realtime) con filtro por estado. **El cajero y la
 - Si más adelante piden pantalla dedicada de cocina, se agrega en v1.1 (~1 día)
 
 ### F4 — Alerta sonora + visual de pedido nuevo (reemplaza el ticket impreso)
-Cuando un pedido entra al panel en estado `new` o `awaiting_payment`:
+Cuando un pedido **nuevo entra al panel** (cualquier `INSERT` en `orders`, sin importar status):
 - **Beep audible** (Web Audio API, ~350ms a 880Hz) para que el cajero se entere aunque no esté mirando la pantalla
-- **Toast persistente** (no se descarta solo) con monto y botón "Visto"
-- El toast **se descarta automáticamente** cuando el cajero avanza el pedido a otro estado (`preparing`, etc.) — un solo gesto
+- **Toast persistente** (no se descarta solo) con monto, hora y la acción esperada del cajero:
+  - Efectivo → *"🍕 Pedido nuevo · $X · 09:30 · Efectivo"* (cajero canta a cocina y avanza a ready cuando esté)
+  - Transferencia/Nequi/Llave → *"🍕 Pedido nuevo · $X · 09:30 · Validar pago"* (cajero abre el detalle, valida comprobante, aprueba)
+- El toast **se descarta automáticamente** cuando el cajero avanza el pedido fuera de `new`/`awaiting_payment` — un solo gesto
 - El cajero canta o anota el pedido a mano para cocina
 
 > El audio en navegadores requiere primer gesto del usuario (autoplay policy). El AudioContext se desbloquea con el primer click/tap; mientras tanto el toast persistente sirve de respaldo.
@@ -152,10 +154,14 @@ Cuando un pedido entra al panel en estado `new` o `awaiting_payment`:
 
 ### F5 — Vista móvil del domiciliario
 Ruta `/mensajero` (login propio, rol `driver`):
-- Lista de pedidos **asignados a él**, en orden
+- Lista de pedidos **actuables**: solo aparecen los que tienen `status ∈ {ready, on_the_way}` y `driver_id = id del driver`. Los pre-asignados en `preparing` o `payment_approved` **no son visibles** para el driver — la pre-asignación del admin es información interna de gestión, no compromiso operativo.
 - Por cada pedido: dirección + botón `Ver en Google Maps`
-- Dos botones: **"Salgo"** y **"Entregado"**
+- Dos botones: **"Salgo"** (en `ready`) y **"Entregado"** (en `on_the_way`)
+- Beep + toast persistente cuando un pedido **aparece en su lista** (transición a actuable: cocina marca ready, o admin asigna con status ya ready)
 - Cada botón dispara notificación automática al cliente
+- Sin badge de status visible: por definición todo lo que ve es ready u on_the_way, el botón visible (Salgo / Entregado) ya implica el estado.
+
+> **Admin sí puede pre-asignar drivers en `preparing`** desde el detalle del pedido en `/pedidos`. Esa información se ve en el panel de admin (`/mensajeros` tab Flota muestra el pipeline completo por driver), pero no llega al driver hasta que el pedido esté listo.
 
 ### F6 — Notificaciones automáticas por cambio de estado
 Cada transición del panel → plantilla aprobada de WhatsApp:
@@ -205,9 +211,12 @@ El comprobante puede llegar por **dos caminos**, el sistema los unifica:
 - Cuando llega la imagen por WhatsApp:
   1. Webhook detecta `type=image` en el mensaje
   2. Descarga la imagen desde Meta y la sube a Storage
-  3. Busca el pedido más reciente del teléfono con `needs_proof=true`
+  3. Busca el único pedido pendiente del teléfono con `needs_proof=true` (ver regla anti-ambigüedad abajo)
   4. La asocia: `payment_proof_url = <url>`, `needs_proof=false`
   5. Notifica al panel por Realtime
+
+**Regla anti-ambigüedad (1 pedido pendiente por teléfono):**
+Si el cliente ya tiene un pedido activo con `needs_proof=true`, **NO se permite crear un segundo**. El checkout devuelve: *"Tienes un pedido pendiente de comprobante. Mándalo por WhatsApp y vuelve a intentar."* Esto cierra en origen el problema de asociar 1 imagen a 2 pedidos pendientes — el flujo natural es: pagar pedido 1 → mandar comprobante → pedir pedido 2.
 
 **Validación manual (igual en ambos casos):**
 1. Cajero ve la miniatura del comprobante en el detalle del pedido
@@ -595,9 +604,11 @@ Todo el diseño **100% con Tailwind v4**. Sin CSS-in-JS.
 |-------|--------------|-------------|---------------|
 | Catálogo `/pedir` | **Principal** (95% del tráfico) | Bien | Bien |
 | Panel `/pedidos` | Lista scroll vertical | 2 columnas | Lista completa + sidebar |
-| `/cocina` | Cards grandes, apiladas | Grid 2 cols | Grid 3 cols, tipografía XL |
-| `/mensajero` | **Principal** | — | — |
+| `/mensajero` (driver) | **Principal** | — | — |
+| `/mensajeros` (admin: gestión + flota) | Cards apiladas | Tabla | Tabla + tabs |
 | `/menu` (admin) | Formulario apilado | 2 cols | Editor completo |
+
+> ~~`/cocina` (vista dedicada para cocina)~~ — descartada en v1. El cajero comparte `/pedidos` con cocina y canta o escribe el pedido a mano. Si en piloto se mide demanda real, se construye en v1.1 (~1 día).
 
 **Reglas clave:**
 - Touch targets ≥ 44×44px
