@@ -72,5 +72,5 @@ GPS tracking, AI parsing, multi-tenant. Documented roadmap for v2.
 
 ## Author
 
-**Rafael Santos** — Full-stack developer · *codecraftdev*
-[GitHub](https://github.com/rafaelSantos43) · [LinkedIn](#) · backend@codecraftdev.com
+**Rafael Santos Mejía** — Full-stack developer
+[GitHub](https://github.com/rafaelSantos43) · [LinkedIn](https://www.linkedin.com/in/rafael-mejia-2517332b9)
