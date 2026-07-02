@@ -1,0 +1,778 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { z } from "zod";
+
+import { assertStaffRole } from "@/features/auth/guards";
+import type { StaffRole } from "@/features/auth/queries";
+import {
+  SIZE_ORDER,
+  type AddonKey,
+  type PizzaAddon,
+  type PizzaSize,
+} from "@/features/catalog/types";
+import { markTokenUsed } from "@/features/order-tokens/mark-used";
+import { signToken } from "@/features/order-tokens/sign";
+import { verifyToken } from "@/features/order-tokens/verify";
+import { sendOrderUpdate } from "@/features/notifications/send-order-update";
+// Acoplamiento conocido orders → whatsapp-twilio (deuda — ENGRAM 2026-05-06).
+// Cuando aparezca un 4to caller del upsert, mover a `src/features/customers/`.
+import { upsertCustomerByPhone } from "@/features/whatsapp-twilio/greet";
+import { getClientEnv } from "@/lib/env";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+
+import { computeEtaAt } from "./eta";
+import { computeUnitPrice } from "./compute-unit-price";
+import { createOrderInputSchema, type CreateOrderInput } from "./schemas";
+import { canTransition } from "./state-machine";
+import type { OrderStatus } from "./types";
+
+// ─── Schemas y tipos compartidos por todas las actions ──────────────
+
+const ORDER_STATUSES = [
+  "new",
+  "awaiting_payment",
+  "payment_approved",
+  "payment_rejected",
+  "preparing",
+  "ready",
+  "on_the_way",
+  "delivered",
+  "cancelled",
+] as const satisfies readonly OrderStatus[];
+
+const transitionOrderInputSchema = z.object({
+  orderId: z.uuid(),
+  toStatus: z.enum(ORDER_STATUSES),
+  reason: z.string().optional(),
+});
+
+const assignDriverInputSchema = z.object({
+  orderId: z.uuid(),
+  driverId: z.uuid().nullable(),
+});
+
+type ActionResult<T = void> =
+  | { ok: true; data: T }
+  | { ok: false; error: string };
+
+const TOKEN_REASON_MESSAGES: Record<string, string> = {
+  malformed: "El enlace no es válido.",
+  invalid_signature: "El enlace no es válido.",
+  not_found: "El enlace no existe o ya fue usado.",
+  expired: "El enlace expiró. Pide uno nuevo por WhatsApp.",
+  used: "El enlace ya fue usado para otro pedido.",
+};
+
+interface PriceRow {
+  product_id: string;
+  size: PizzaSize;
+  price_cents: number;
+}
+
+interface ProductRuleRow {
+  id: string;
+  max_flavors: number;
+  min_size_for_multiflavor: PizzaSize | null;
+}
+
+function sizeAtLeast(size: PizzaSize, min: PizzaSize): boolean {
+  return SIZE_ORDER.indexOf(size) >= SIZE_ORDER.indexOf(min);
+}
+
+// Cash salta validación de pago → entra directo a preparing.
+// Transferencia con comprobante → awaiting_payment con la imagen lista.
+// La rama "transferencia sin comprobante" (camino B / WhatsApp) está
+// bloqueada server-side por el guard en createOrder mientras Twilio
+// sandbox sea el sender activo. Se mantiene la rama por defense-in-depth
+// y para reactivar fácil cuando vuelva Meta Cloud API.
+function pickInitialStatus(
+  input: CreateOrderInput,
+): { status: OrderStatus; needsProof: boolean; proofUrl: string | null } {
+  if (input.paymentMethod === "cash") {
+    return { status: "preparing", needsProof: false, proofUrl: null };
+  }
+  if (input.paymentProofPath) {
+    return {
+      status: "awaiting_payment",
+      needsProof: false,
+      proofUrl: input.paymentProofPath,
+    };
+  }
+  return { status: "awaiting_payment", needsProof: true, proofUrl: null };
+}
+
+// ─── createOrder: entrada del pedido desde el catálogo público ─────
+// Recalcula precios server-side (no confía en el carrito del cliente),
+// inserta address+order+items+event, marca token usado.
+
+export async function createOrder(
+  input: unknown,
+): Promise<ActionResult<{ orderId: string }>> {
+  const parsed = createOrderInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "Datos inválidos" };
+  }
+  const data = parsed.data;
+
+  // D15: el camino B (cliente envía comprobante por WhatsApp) requiere
+  // que el webhook entrante procese imágenes y las asocie al pedido
+  // pendiente. Solo el adapter Meta (handle-incoming.ts) lo hace; el
+  // webhook de Twilio ignora MediaUrl0. Mientras Twilio sandbox sea el
+  // sender activo, forzar camino A: comprobante obligatorio en el
+  // checkout para cualquier método que no sea efectivo. La UI ya lo
+  // hace con `disabled={needsProof && !proofFile}`; este guard cierra
+  // el bypass por DevTools / payload directo. Cuando vuelva Meta Cloud
+  // API, este guard se elimina y `pickInitialStatus` vuelve a tolerar
+  // la rama needs_proof=true.
+  if (data.paymentMethod !== "cash" && !data.paymentProofPath) {
+    return {
+      ok: false,
+      error:
+        "El comprobante es obligatorio para pagos por transferencia. Vuelve al menú y súbelo en el checkout.",
+    };
+  }
+
+  const tokenResult = await verifyToken(data.token);
+  if (!tokenResult.ok) {
+    return {
+      ok: false,
+      error:
+        TOKEN_REASON_MESSAGES[tokenResult.reason] ?? "El enlace no es válido.",
+    };
+  }
+  const { customerId, tokenId } = tokenResult;
+
+  // L08 — anti-ambigüedad de comprobante: si el customer tiene CUALQUIER
+  // pedido activo con `needs_proof=true`, bloqueamos la creación de un
+  // segundo. En Twilio sandbox la única vía a `needs_proof=true` es que
+  // el cajero haya rechazado un comprobante (transitionOrder →
+  // payment_rejected); cuando vuelva Meta Cloud API, también lo causará
+  // el camino B (cliente manda imagen por WhatsApp y aún no la asocia).
+  // Una regla "1 pedido pendiente por teléfono a la vez" cubre ambos.
+  //
+  // NO marcamos el token todavía: el cliente puede reusar el mismo link
+  // cuando el caso anterior se resuelva.
+  const { data: pendingProofs, error: pendingErr } = await supabaseAdmin
+    .from("orders")
+    .select("id")
+    .eq("customer_id", customerId)
+    .eq("needs_proof", true)
+    .not("status", "in", "(delivered,cancelled)")
+    .limit(1);
+  if (pendingErr) {
+    console.error("createOrder pending-proofs check failed", pendingErr);
+    return {
+      ok: false,
+      error: "No pudimos crear tu pedido. Intenta de nuevo en un momento.",
+    };
+  }
+  if (pendingProofs && pendingProofs.length > 0) {
+    return {
+      ok: false,
+      error:
+        "Tienes un pedido pendiente con el restaurante. Espera a que se complete antes de hacer otro.",
+    };
+  }
+
+  // L01: marcar el token usado ANTES de cualquier INSERT. Si la cascada
+  // falla a mitad, el cliente NO puede reintentar con el mismo link y
+  // generar un duplicado en el panel. La alternativa "marcar al final"
+  // dejaba la ventana abierta.
+  //
+  // Concurrencia: `markTokenUsed` retorna false si OTRA request ya lo
+  // marcó entre nuestro verifyToken y este update. Esto cubre el doble
+  // submit del cliente (network lento + segundo click): aunque ambos
+  // requests pasen verifyToken con `used_at=null`, solo uno gana el
+  // UPDATE atómico; el otro aborta acá sin crear pedido duplicado.
+  let markedThisCall = false;
+  try {
+    markedThisCall = await markTokenUsed(tokenId);
+  } catch (err) {
+    console.error("markTokenUsed failed", err);
+    return {
+      ok: false,
+      error: "No pudimos crear tu pedido. Pide un nuevo link por WhatsApp.",
+    };
+  }
+  if (!markedThisCall) {
+    return {
+      ok: false,
+      error: "Este enlace ya fue usado. Pide un nuevo link por WhatsApp.",
+    };
+  }
+
+  try {
+    // El nombre del checkout siempre gana — es el cliente confirmando
+    // cómo quiere que lo llamemos en este pedido.
+    const { error: nameErr } = await supabaseAdmin
+      .from("customers")
+      .update({ name: data.customerName })
+      .eq("id", customerId);
+    if (nameErr) throw nameErr;
+
+    // Pickup ("Recoger en el local"): no se inserta dirección. address_id
+    // queda NULL en el order. El cliente recoge en settings.business_address.
+    let addressId: string | null = null;
+    if (data.deliveryType === "delivery") {
+      if (!data.addressInput) {
+        // Cubre el caso teórico de bypass por DevTools que el .refine() de Zod
+        // no atrapó (no debería pasar — Zod ya validó).
+        return {
+          ok: false,
+          error: "La dirección es obligatoria para pedidos a domicilio.",
+        };
+      }
+      const addressInsert = {
+        customer_id: customerId,
+        street: data.addressInput.street,
+        complex_name: data.addressInput.complex_name ?? null,
+        tower: data.addressInput.tower ?? null,
+        apartment: data.addressInput.apartment ?? null,
+        neighborhood: data.addressInput.neighborhood ?? null,
+        references: data.addressInput.references ?? null,
+        zone: data.addressInput.zone ?? null,
+      };
+      const { data: addressRow, error: addressErr } = await supabaseAdmin
+        .from("addresses")
+        .insert(addressInsert)
+        .select("id")
+        .single();
+      if (addressErr) throw addressErr;
+      addressId = (addressRow as { id: string }).id;
+    }
+
+    const productIds = Array.from(
+      new Set(
+        data.items.flatMap((i) => [i.productId, ...(i.flavors ?? [])]),
+      ),
+    );
+
+    const { data: priceRowsRaw, error: priceErr } = await supabaseAdmin
+      .from("product_sizes")
+      .select("product_id, size, price_cents")
+      .in("product_id", productIds);
+    if (priceErr) throw priceErr;
+
+    const priceMap = new Map<string, number>();
+    for (const row of (priceRowsRaw ?? []) as PriceRow[]) {
+      priceMap.set(`${row.product_id}:${row.size}`, row.price_cents);
+    }
+
+    const { data: ruleRowsRaw, error: ruleErr } = await supabaseAdmin
+      .from("products")
+      .select("id, max_flavors, min_size_for_multiflavor")
+      .in("id", productIds)
+      .eq("active", true);
+    if (ruleErr) throw ruleErr;
+
+    const ruleMap = new Map<string, ProductRuleRow>();
+    for (const row of (ruleRowsRaw ?? []) as ProductRuleRow[]) {
+      ruleMap.set(row.id, row);
+    }
+
+    // Settings: delivery_zones para ETA + pizza_addons para validar/sumar
+    // los precios de las adiciones (borde queso, estofada, etc.) item-por-item.
+    // Lectura única antes del loop para no pegarle a la DB N veces.
+    const { data: settingsRow, error: settingsErr } = await supabaseAdmin
+      .from("settings")
+      .select("delivery_zones, pizza_addons, pickup_prep_min")
+      .maybeSingle();
+    if (settingsErr) throw settingsErr;
+
+    const settingsTyped = settingsRow as {
+      delivery_zones: { zone: string; eta_min: number }[] | null;
+      pizza_addons: PizzaAddon[] | null;
+      pickup_prep_min: number | null;
+    } | null;
+
+    const deliveryZones = settingsTyped?.delivery_zones ?? [];
+    const pizzaAddons = settingsTyped?.pizza_addons ?? [];
+    const pickupPrepMin = settingsTyped?.pickup_prep_min ?? 30;
+    const addonPriceMap = new Map<AddonKey, Record<PizzaSize, number>>();
+    for (const a of pizzaAddons) {
+      addonPriceMap.set(a.key, a.prices);
+    }
+
+    const itemsResolved: {
+      product_id: string;
+      size: PizzaSize;
+      qty: number;
+      unit_price_cents: number;
+      flavors: string[] | null;
+      addon_key: AddonKey | null;
+      notes: string | null;
+    }[] = [];
+
+    for (const item of data.items) {
+      const rule = ruleMap.get(item.productId);
+      if (!rule) {
+        // U04: el cliente no sabe QUÉ producto. Pedirle volver al catálogo
+        // es la acción accionable; ahí va a ver qué cambió.
+        return {
+          ok: false,
+          error:
+            "Uno de los productos de tu carrito ya no está disponible. Vuelve al catálogo y arma tu pedido de nuevo.",
+        };
+      }
+
+      const flavors = item.flavors ?? [];
+      if (flavors.length > rule.max_flavors) {
+        return {
+          ok: false,
+          error: `Una de tus pizzas tiene más sabores de los permitidos (máximo ${rule.max_flavors}). Edítala desde el carrito.`,
+        };
+      }
+      if (flavors.length > 1) {
+        if (
+          !rule.min_size_for_multiflavor ||
+          !sizeAtLeast(item.size, rule.min_size_for_multiflavor)
+        ) {
+          return {
+            ok: false,
+            error:
+              "Mitad y mitad solo está disponible desde tamaño Pequeña en adelante. Cambia el tamaño o quita un sabor.",
+          };
+        }
+      }
+
+      // Adición (borde queso / estofada / etc.): el cliente eligió un slug;
+      // el server resuelve el precio extra desde settings.pizza_addons. Si
+      // settings cambió entre que el cliente abrió el catálogo y confirmó,
+      // pedirle editar la pizza es accionable.
+      const addonKey: AddonKey | null = item.addonKey ?? null;
+      let addonExtra = 0;
+      if (addonKey) {
+        const prices = addonPriceMap.get(addonKey);
+        if (!prices) {
+          return {
+            ok: false,
+            error:
+              "Esa adición ya no está disponible. Edita la pizza desde el carrito.",
+          };
+        }
+        const priceForSize = prices[item.size];
+        if (priceForSize === undefined) {
+          return {
+            ok: false,
+            error:
+              "Esa adición ya no está disponible para ese tamaño. Edita la pizza desde el carrito.",
+          };
+        }
+        addonExtra = priceForSize;
+      }
+
+      const priced = computeUnitPrice({
+        baseProductId: item.productId,
+        flavors: item.flavors,
+        size: item.size,
+        priceMap,
+        addonExtra,
+      });
+      if (!priced.ok) {
+        return {
+          ok: false,
+          error:
+            priced.reason === "flavor_missing"
+              ? "Uno de los sabores que elegiste no está disponible en ese tamaño. Edita la pizza desde el carrito."
+              : "Uno de los productos de tu carrito ya no está disponible. Vuelve al catálogo y arma tu pedido de nuevo.",
+        };
+      }
+
+      itemsResolved.push({
+        product_id: item.productId,
+        size: item.size,
+        qty: item.qty,
+        unit_price_cents: priced.price,
+        flavors: flavors.length > 0 ? flavors : null,
+        addon_key: addonKey,
+        notes: item.notes ?? null,
+      });
+    }
+
+    const totalCents = itemsResolved.reduce(
+      (sum, it) => sum + it.unit_price_cents * it.qty,
+      0,
+    );
+
+    const { status, needsProof, proofUrl } = pickInitialStatus(data);
+
+    const etaAt = computeEtaAt(
+      data.addressInput?.zone ?? null,
+      deliveryZones,
+      new Date(),
+      { deliveryType: data.deliveryType, pickupPrepMin },
+    );
+
+    const orderInsert = {
+      customer_id: customerId,
+      // Snapshot del nombre tal cual lo escribió en el checkout. La fila
+      // de `customers` también se actualiza arriba para reflejar el "vivo",
+      // pero este snapshot preserva el histórico del momento.
+      customer_name: data.customerName,
+      address_id: addressId,
+      status,
+      total_cents: totalCents,
+      payment_method: data.paymentMethod,
+      payment_proof_url: proofUrl,
+      needs_proof: needsProof,
+      // Camino A (upload web) → "web". Camino B (WhatsApp) lo setea
+      // handle-incoming cuando asocia la imagen → "whatsapp". En Twilio
+      // sandbox el camino B está bloqueado server-side por el guard
+      // de inicio de createOrder; mientras tanto, este campo siempre
+      // queda como "web" o null (efectivo).
+      payment_proof_source: proofUrl ? "web" : null,
+      delivery_type: data.deliveryType,
+      eta_at: etaAt.toISOString(),
+      notes: data.notes ?? null,
+    };
+
+    const { data: orderRow, error: orderErr } = await supabaseAdmin
+      .from("orders")
+      .insert(orderInsert)
+      .select("id")
+      .single();
+    if (orderErr) throw orderErr;
+    const orderId = (orderRow as { id: string }).id;
+
+    const itemsInsert = itemsResolved.map((it) => ({
+      order_id: orderId,
+      product_id: it.product_id,
+      size: it.size,
+      qty: it.qty,
+      unit_price_cents: it.unit_price_cents,
+      flavors: it.flavors,
+      addon_key: it.addon_key,
+      notes: it.notes,
+    }));
+    const { error: itemsErr } = await supabaseAdmin
+      .from("order_items")
+      .insert(itemsInsert);
+    if (itemsErr) throw itemsErr;
+
+    const { error: eventErr } = await supabaseAdmin
+      .from("order_status_events")
+      .insert({
+        order_id: orderId,
+        from_status: null,
+        to_status: status,
+        actor_id: null,
+      });
+    if (eventErr) throw eventErr;
+
+    return { ok: true, data: { orderId } };
+  } catch (err) {
+    console.error("createOrder failed", err);
+    // El token ya fue consumido arriba. Si el cliente reintenta verá
+    // "Enlace ya usado". Aceptable: no genera duplicados en el panel.
+    return {
+      ok: false,
+      error: "No pudimos crear tu pedido. Pide un nuevo link por WhatsApp.",
+    };
+  }
+}
+
+// ─── Acciones del staff: transiciones, pagos, asignación ───────────
+
+type SimpleResult = { ok: true } | { ok: false; error: string };
+
+interface OrderStateRow {
+  status: OrderStatus;
+  needs_proof: boolean;
+  payment_proof_url: string | null;
+  driver_id: string | null;
+  delivery_type: "delivery" | "pickup";
+}
+
+async function loadOrderState(orderId: string): Promise<OrderStateRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from("orders")
+    .select("status, needs_proof, payment_proof_url, driver_id, delivery_type")
+    .eq("id", orderId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as OrderStateRow | null) ?? null;
+}
+
+// Matriz de roles autorizados por estado destino para `transitionOrder`.
+// Estados con array vacío están bloqueados como transición manual
+// (e.g. `new`/`awaiting_payment` se setean al crear el pedido).
+const TRANSITION_ROLE_MATRIX: Record<OrderStatus, StaffRole[]> = {
+  new: [],
+  awaiting_payment: [],
+  payment_approved: ["cashier", "admin"],
+  payment_rejected: ["cashier", "admin"],
+  preparing: ["cashier", "kitchen", "admin"],
+  ready: ["kitchen", "cashier", "admin"],
+  on_the_way: ["driver", "cashier", "admin"],
+  delivered: ["driver", "cashier", "admin"],
+  cancelled: ["cashier", "admin"],
+};
+
+export async function transitionOrder(input: {
+  orderId: string;
+  toStatus: OrderStatus;
+  reason?: string;
+}): Promise<SimpleResult> {
+  const parsed = transitionOrderInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "Datos inválidos" };
+  }
+  const { orderId, toStatus } = parsed.data;
+
+  // Autorización por matriz de roles (L02 — ver docs/audit/logica.md).
+  const allowedRoles = TRANSITION_ROLE_MATRIX[toStatus];
+  if (allowedRoles.length === 0) {
+    return { ok: false, error: "Esta transición no se hace manualmente" };
+  }
+  const auth = await assertStaffRole(allowedRoles);
+  if (!auth.ok) return { ok: false, error: auth.error };
+  const { staff } = auth;
+
+  try {
+    const current = await loadOrderState(orderId);
+    if (!current) return { ok: false, error: "Pedido no encontrado" };
+
+    // Driver solo puede transicionar pedidos asignados a él. La UI ya
+    // filtra `/mensajero` por driver, pero la Server Action es endpoint
+    // público y puede llamarse directamente bypassando la UI.
+    if (
+      staff.role === "driver" &&
+      (toStatus === "on_the_way" || toStatus === "delivered") &&
+      current.driver_id !== staff.id
+    ) {
+      return {
+        ok: false,
+        error: "Solo puedes actualizar pedidos asignados a ti",
+      };
+    }
+
+    // Comprobante obligatorio antes de aprobar pago. Movido aquí desde
+    // `approvePayment` para que la guardia aplique aunque alguien llame
+    // `transitionOrder` directo con `toStatus = "payment_approved"`.
+    if (toStatus === "payment_approved") {
+      if (current.needs_proof || !current.payment_proof_url) {
+        return { ok: false, error: "Falta el comprobante" };
+      }
+    }
+
+    if (!canTransition(current.status, toStatus, current.delivery_type)) {
+      return { ok: false, error: "Transición inválida" };
+    }
+
+    const update: Record<string, unknown> = { status: toStatus };
+    if (toStatus === "payment_approved") {
+      update.payment_approved_at = new Date().toISOString();
+    }
+    if (toStatus === "delivered") {
+      update.delivered_at = new Date().toISOString();
+    }
+    // Rechazar el comprobante: limpiamos la URL para que el cliente
+    // pueda reenviar uno nuevo (camino A o B) sin colisionar con el viejo.
+    // Reseteamos también `proof_reminder_sent_at` para que el cron emita un
+    // nuevo recordatorio si el cliente tarda en reenviar; y la fuente
+    // queda en null hasta que llegue el proof nuevo.
+    if (toStatus === "payment_rejected") {
+      update.needs_proof = true;
+      update.payment_proof_url = null;
+      update.proof_reminder_sent_at = null;
+      update.payment_proof_source = null;
+    }
+
+    // Concurrencia optimista: el UPDATE incluye guard sobre `status` igual
+    // al que leímos. Si otro operador (cajero/cocina/driver) cambió el
+    // estado entre `loadOrderState` y este update, `affected_rows = 0` y
+    // devolvemos error en lugar de pisar su cambio. Cubre doble-click
+    // del mismo operador, dos operadores compartiendo el panel, y
+    // race condition driver+cajero clickeando casi en simultáneo.
+    const { data: updated, error: updateErr } = await supabaseAdmin
+      .from("orders")
+      .update(update)
+      .eq("id", orderId)
+      .eq("status", current.status)
+      .select("id");
+    if (updateErr) throw updateErr;
+    if (!updated || updated.length === 0) {
+      return {
+        ok: false,
+        error:
+          "El pedido cambió de estado mientras lo actualizabas. Recarga para ver el estado actual.",
+      };
+    }
+
+    const { error: eventErr } = await supabaseAdmin
+      .from("order_status_events")
+      .insert({
+        order_id: orderId,
+        from_status: current.status,
+        to_status: toStatus,
+        actor_id: staff.id,
+      });
+    if (eventErr) throw eventErr;
+
+    try {
+      await sendOrderUpdate(orderId, toStatus);
+    } catch (err) {
+      console.error("sendOrderUpdate errored", err);
+    }
+
+    revalidatePath("/pedidos");
+    revalidatePath(`/pedidos/${orderId}`);
+    return { ok: true };
+  } catch (err) {
+    console.error("transitionOrder failed", err);
+    return { ok: false, error: "No pudimos actualizar el pedido." };
+  }
+}
+
+// Aliases finos para mantener el API público. Toda la autorización y
+// validación del comprobante vive en `transitionOrder` para que no se
+// pueda saltar llamando la action directa.
+export async function approvePayment(orderId: string): Promise<SimpleResult> {
+  return transitionOrder({ orderId, toStatus: "payment_approved" });
+}
+
+export async function rejectPayment(
+  orderId: string,
+  reason?: string,
+): Promise<SimpleResult> {
+  return transitionOrder({
+    orderId,
+    toStatus: "payment_rejected",
+    reason,
+  });
+}
+
+export async function assignDriver(input: {
+  orderId: string;
+  driverId: string | null;
+}): Promise<SimpleResult> {
+  const auth = await assertStaffRole(["cashier", "admin"]);
+  if (!auth.ok) return { ok: false, error: auth.error };
+
+  const parsed = assignDriverInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "Datos inválidos" };
+  }
+  const { orderId, driverId } = parsed.data;
+
+  try {
+    // Cargar estado actual del pedido
+    const { data: currentOrder, error: loadErr } = await supabaseAdmin
+      .from("orders")
+      .select("status, payment_approved_at, payment_method, delivery_type")
+      .eq("id", orderId)
+      .single();
+
+    if (loadErr || !currentOrder) {
+      return { ok: false, error: "Pedido no encontrado" };
+    }
+
+    // Pickup: el cliente recoge en el local, no requiere domiciliario.
+    if (currentOrder.delivery_type === "pickup") {
+      return {
+        ok: false,
+        error:
+          "Este pedido es para recoger en el local, no requiere domiciliario.",
+      };
+    }
+
+    // Guard: estado válido para asignar
+    const ASSIGNABLE_STATUSES = [
+      "payment_approved",
+      "preparing",
+      "ready",
+      "on_the_way",
+    ] as const;
+    if (!ASSIGNABLE_STATUSES.includes(currentOrder.status as any)) {
+      return {
+        ok: false,
+        error: `No se puede asignar en estado '${currentOrder.status}'. El pago debe ser aprobado primero.`,
+      };
+    }
+
+    // Guard: si se intenta asignar un driver, validar que existe, está
+    // activo y su rol es 'driver'. La tabla correcta es `profiles` (no
+    // `staff` — esta query venía rota desde el guard original de 2026-04-18).
+    if (driverId) {
+      const { data: driver, error: driverErr } = await supabaseAdmin
+        .from("profiles")
+        .select("id, role, active")
+        .eq("id", driverId)
+        .eq("role", "driver")
+        .eq("active", true)
+        .maybeSingle();
+
+      if (driverErr || !driver) {
+        return {
+          ok: false,
+          error: "El domiciliario no existe o no tiene rol válido.",
+        };
+      }
+    }
+
+    const { error } = await supabaseAdmin
+      .from("orders")
+      .update({ driver_id: driverId })
+      .eq("id", orderId);
+    if (error) throw error;
+
+    revalidatePath("/pedidos");
+    revalidatePath("/mensajero");
+    return { ok: true };
+  } catch (err) {
+    console.error("assignDriver failed", err);
+    return { ok: false, error: "No pudimos asignar al domiciliario." };
+  }
+}
+
+// ─── B2: Nuevo pedido manual ──────────────────────────────────────────
+// El cajero genera un link al catálogo para un cliente que no usó el bot
+// (mayor, sin link, etc.). Upsertea customer por phone, firma token y
+// devuelve la URL pública para copiar/pegar en WhatsApp.
+
+const manualOrderLinkInputSchema = z.object({
+  phone: z
+    .string()
+    .regex(/^\+57\d{10}$/, "Teléfono debe ser +57 seguido de 10 dígitos"),
+  name: z.string().trim().min(1).max(80).optional(),
+});
+
+export async function createManualOrderLink(input: {
+  phone: string;
+  name?: string;
+}): Promise<
+  | { ok: true; data: { link: string; expiresAt: string } }
+  | { ok: false; error: string }
+> {
+  const auth = await assertStaffRole(["admin", "cashier"]);
+  if (!auth.ok) return { ok: false, error: auth.error };
+
+  const parsed = manualOrderLinkInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "Datos inválidos",
+    };
+  }
+
+  try {
+    const upsert = await upsertCustomerByPhone(
+      parsed.data.phone,
+      parsed.data.name,
+    );
+    if (!upsert.ok) return { ok: false, error: upsert.error };
+
+    const { token, expiresAt } = await signToken(upsert.customerId);
+    const link = `${getClientEnv().NEXT_PUBLIC_APP_URL}/pedir/${token}`;
+
+    revalidatePath("/pedidos");
+    return {
+      ok: true,
+      data: { link, expiresAt: expiresAt.toISOString() },
+    };
+  } catch (err) {
+    console.error("createManualOrderLink failed", err);
+    return { ok: false, error: "No pudimos generar el link. Intenta de nuevo." };
+  }
+}

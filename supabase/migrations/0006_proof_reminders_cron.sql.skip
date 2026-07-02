@@ -1,0 +1,69 @@
+-- =====================================================
+-- 0006_proof_reminders_cron.sql
+-- PRD §F9 mejora 2026-04-30: recordatorio automático cuando un pedido
+-- pendiente lleva más de 5 min sin comprobante (camino B). pg_cron corre
+-- cada 2 min y dispara el Route Handler /api/cron/proof-reminders.
+--
+-- Reusa la tabla `cron_config` y el row `cron_secret` que crea
+-- 0003_delay_alerts.sql. Esta migration ASUME que 0003 ya se aplicó.
+--
+-- Requiere Supabase plan Pro (pg_cron no está habilitado en Free).
+-- Idempotente.
+-- =====================================================
+
+insert into cron_config (key, value) values
+  ('proof_reminders_url', 'https://REEMPLAZAR-CON-DOMINIO/api/cron/proof-reminders')
+on conflict (key) do nothing;
+
+create or replace function public.run_proof_reminders_job()
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_url text;
+  v_secret text;
+  v_request_id bigint;
+begin
+  select value into v_url from cron_config where key = 'proof_reminders_url';
+  select value into v_secret from cron_config where key = 'cron_secret';
+
+  if v_url is null or v_url = '' or v_url like '%REEMPLAZAR%' then
+    raise notice 'proof_reminders_url no configurado, skipping';
+    return;
+  end if;
+
+  select net.http_post(
+    url := v_url,
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || v_secret,
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb,
+    timeout_milliseconds := 10000
+  ) into v_request_id;
+end;
+$$;
+
+select
+  case
+    when exists (select 1 from cron.job where jobname = 'proof_reminders_every_2min')
+      then cron.unschedule('proof_reminders_every_2min')
+    else null
+  end;
+
+select cron.schedule(
+  'proof_reminders_every_2min',
+  '*/2 * * * *',
+  $CRON$ select public.run_proof_reminders_job(); $CRON$
+);
+
+-- =====================================================
+-- Notas de deploy:
+-- 1. Aplicar DESPUÉS de 0003_delay_alerts.sql (depende de cron_config).
+-- 2. UPDATE proof_reminders_url en Supabase Studio:
+--      https://<dominio-vercel>/api/cron/proof-reminders
+-- 3. Verificar:
+--      select * from cron.job where jobname = 'proof_reminders_every_2min';
+-- =====================================================

@@ -1,0 +1,896 @@
+"use client";
+
+import { zodResolver } from "@hookform/resolvers/zod";
+import {
+  ArrowLeft,
+  Bike,
+  Building,
+  Building2,
+  Home,
+  Info,
+  Loader2,
+  MapPin,
+  MessageCircle,
+  Store,
+  Upload,
+  X,
+} from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { Controller, useForm } from "react-hook-form";
+import { toast } from "sonner";
+import { z } from "zod";
+
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Textarea } from "@/components/ui/textarea";
+import { CheckoutReview } from "./checkout-review";
+import { NeighborhoodCombobox } from "./neighborhood-combobox";
+import { SavedAddressChip } from "./saved-address-chip";
+import {
+  ALLOWED_PROOF_MIME,
+  MAX_PROOF_BYTES,
+} from "@/features/payments/schemas";
+import type { Settings } from "@/features/catalog/types";
+import type { CartItem } from "@/features/cart/types";
+import type { CustomerProfile } from "@/features/orders/types";
+import { clearStoredCart, loadCart } from "@/features/cart/storage";
+import { createOrder } from "@/features/orders/actions";
+import { uploadProofByToken } from "@/features/cart/upload-proof-by-token";
+import { compressImage } from "@/lib/compress-image";
+import { formatCop } from "@/lib/format";
+import { cn } from "@/lib/utils";
+
+// ─── Constantes y schemas ───────────────────────────────────────────
+
+const PAYMENT_METHODS = ["cash", "bancolombia", "nequi", "llave"] as const;
+
+const HOUSING_TYPES = ["casa", "edificio", "conjunto"] as const;
+type HousingType = (typeof HOUSING_TYPES)[number];
+
+const HOUSING_OPTIONS: { value: HousingType; label: string; icon: typeof Home }[] = [
+  { value: "casa", label: "Casa", icon: Home },
+  { value: "edificio", label: "Edificio", icon: Building },
+  { value: "conjunto", label: "Conjunto", icon: Building2 },
+];
+
+const checkoutFormSchema = z
+  .object({
+    deliveryType: z.enum(["delivery", "pickup"]),
+    customerName: z.string().min(1, "Tu nombre es obligatorio"),
+    // phone es read-only en UI: viene del profile del customer ya
+    // identificado por el token. No se envía a createOrder.
+    phone: z.string().optional(),
+    housingType: z.enum(HOUSING_TYPES),
+    // street ya NO es required a nivel de schema base; el refine de abajo
+    // lo exige solo para deliveryType=delivery. Esto permite que pickup
+    // pase validación con street vacío.
+    street: z.string(),
+    complex_name: z.string().optional(),
+    tower: z.string().optional(),
+    apartment: z.string().optional(),
+    neighborhood: z.string().optional(),
+    references: z.string().optional(),
+    paymentMethod: z.enum(PAYMENT_METHODS),
+    notes: z.string().optional(),
+    acceptedPolicies: z.literal(true, {
+      message: "Debes aceptar las políticas",
+    }),
+  })
+  .refine(
+    (data) =>
+      data.deliveryType === "pickup" ||
+      (data.street && data.street.trim().length > 0),
+    {
+      message: "La dirección es obligatoria para pedidos a domicilio.",
+      path: ["street"],
+    },
+  );
+
+type CheckoutFormValues = z.infer<typeof checkoutFormSchema>;
+
+const PAYMENT_LABEL: Record<(typeof PAYMENT_METHODS)[number], string> = {
+  cash: "Efectivo",
+  bancolombia: "Bancolombia",
+  nequi: "Nequi",
+  llave: "Llave",
+};
+
+// Helpers locales (no exportados): infieren UI desde la dirección
+// guardada del customer. La DB no guarda housing_type, lo derivamos.
+function inferHousingType(
+  addr: NonNullable<CustomerProfile["lastAddress"]>,
+): HousingType {
+  if (addr.tower) return "conjunto";
+  if (addr.complex_name) return "edificio";
+  return "casa";
+}
+
+function formatAddressSummary(
+  addr: NonNullable<CustomerProfile["lastAddress"]>,
+): string {
+  const parts: (string | null)[] = [addr.street];
+  if (addr.complex_name) parts.push(addr.complex_name);
+  if (addr.tower) parts.push(`Torre ${addr.tower}`);
+  if (addr.apartment) parts.push(`Apto ${addr.apartment}`);
+  return parts.filter((p): p is string => Boolean(p)).join(" · ");
+}
+
+interface CheckoutFormProps {
+  token: string;
+  settings: Settings;
+  profile: CustomerProfile | null;
+}
+
+// ─── Componente: estado, handlers, submit ───────────────────────────
+
+export function CheckoutForm({ token, settings, profile }: CheckoutFormProps) {
+  const router = useRouter();
+  const [cart, setCart] = useState<CartItem[] | null>(null);
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [proofError, setProofError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [usingSavedAddress, setUsingSavedAddress] = useState<boolean>(
+    profile?.lastAddress != null,
+  );
+
+  useEffect(() => {
+    // hidratamos desde localStorage tras el mount para evitar mismatch SSR/CSR
+    setCart(loadCart());
+  }, []);
+
+  const cartItems: CartItem[] = cart ?? [];
+
+  const form = useForm<CheckoutFormValues>({
+    resolver: zodResolver(checkoutFormSchema),
+    defaultValues: {
+      // Default a delivery para no alterar UX existente. El switch
+      // arriba del form deja pasar al cliente a pickup explícitamente.
+      deliveryType: "delivery",
+      customerName: profile?.name ?? "",
+      phone: profile?.phone ?? "",
+      housingType: profile?.lastAddress
+        ? inferHousingType(profile.lastAddress)
+        : "casa",
+      street: profile?.lastAddress?.street ?? "",
+      complex_name: profile?.lastAddress?.complex_name ?? "",
+      tower: profile?.lastAddress?.tower ?? "",
+      apartment: profile?.lastAddress?.apartment ?? "",
+      neighborhood: profile?.lastAddress?.neighborhood ?? "",
+      references: profile?.lastAddress?.references ?? "",
+      paymentMethod: "cash",
+      notes: "",
+      // schema fuerza true en submit; el form arranca en false. El cast
+      // satisface el tipo literal sin mentirle al usuario en runtime.
+      acceptedPolicies: false as unknown as true,
+    },
+  });
+
+  const { register, handleSubmit, control, watch, setValue, formState } = form;
+  const paymentMethod = watch("paymentMethod");
+  const housingType = watch("housingType");
+  const deliveryType = watch("deliveryType");
+  const isPickup = deliveryType === "pickup";
+  const needsProof = paymentMethod !== "cash";
+
+  // Limpia campos que no aplican al tipo nuevo para no enviar datos
+  // residuales (ej. "torre" cuando ya es casa).
+  function handleHousingChange(next: HousingType) {
+    setValue("housingType", next);
+    if (next === "casa") {
+      setValue("complex_name", "");
+      setValue("tower", "");
+      setValue("apartment", "");
+    } else if (next === "edificio") {
+      setValue("tower", "");
+    }
+  }
+
+  const total = cartItems.reduce(
+    (sum, it) => sum + it.unitPriceCents * it.qty,
+    0,
+  );
+
+  function handleCancel() {
+    if (!window.confirm("¿Vaciar el carrito y volver al catálogo?")) return;
+    clearStoredCart();
+    router.push(`/pedir/${token}`);
+  }
+
+  function handleProofChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    setProofError(null);
+    if (!file) {
+      setProofFile(null);
+      return;
+    }
+    if (!(ALLOWED_PROOF_MIME as readonly string[]).includes(file.type)) {
+      setProofError("Formato no válido (jpg, png o webp)");
+      setProofFile(null);
+      return;
+    }
+    if (file.size > MAX_PROOF_BYTES) {
+      setProofError("El archivo supera 5 MB");
+      setProofFile(null);
+      return;
+    }
+    setProofFile(file);
+  }
+
+  // ─── Submit: comprobante (si aplica) → createOrder → redirect ─────
+  async function onSubmit(values: CheckoutFormValues) {
+    if (cartItems.length === 0) {
+      toast.error("Tu carrito está vacío");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      let proofPath: string | undefined;
+
+      if (values.paymentMethod !== "cash" && proofFile) {
+        const compressed = await compressImage(proofFile);
+        const fd = new FormData();
+        fd.set("token", token);
+        fd.set("file", compressed);
+        const uploadResult = await uploadProofByToken(fd);
+        if (!uploadResult.ok) {
+          toast.error(uploadResult.error);
+          setSubmitting(false);
+          return;
+        }
+        proofPath = uploadResult.data.path;
+      }
+
+      const isPickupSubmit = values.deliveryType === "pickup";
+      const orderResult = await createOrder({
+        token,
+        customerName: values.customerName.trim(),
+        deliveryType: values.deliveryType,
+        // Pickup ignora la dirección server-side, pero evitamos enviar
+        // datos que el cliente quizá ya escribió y luego cambió a recoger.
+        addressInput: isPickupSubmit
+          ? undefined
+          : {
+              street: values.street.trim(),
+              complex_name: values.complex_name?.trim() || undefined,
+              tower: values.tower?.trim() || undefined,
+              apartment: values.apartment?.trim() || undefined,
+              neighborhood: values.neighborhood?.trim() || undefined,
+              references: values.references?.trim() || undefined,
+            },
+        items: cartItems.map((it) => ({
+          productId: it.productId,
+          size: it.size,
+          qty: it.qty,
+          flavors:
+            it.flavors.length > 0
+              ? it.flavors.map((f) => f.productId)
+              : undefined,
+          notes: it.notes || undefined,
+        })),
+        paymentMethod: values.paymentMethod,
+        paymentProofPath: proofPath,
+        notes: values.notes?.trim() || undefined,
+      });
+
+      if (!orderResult.ok) {
+        toast.error(orderResult.error);
+        setSubmitting(false);
+        return;
+      }
+
+      clearStoredCart();
+      router.push(
+        `/pedir/${token}/gracias?id=${orderResult.data.orderId}`,
+      );
+    } catch {
+      toast.error("Algo salió mal. Intenta de nuevo.");
+      setSubmitting(false);
+    }
+  }
+
+  if (cart !== null && cartItems.length === 0) {
+    return (
+      <main className="flex min-h-dvh flex-col items-center justify-center gap-4 px-6 py-16 text-center">
+        <span className="text-5xl" aria-hidden>
+          🍕
+        </span>
+        <h1 className="font-serif text-2xl text-foreground">
+          Tu carrito está vacío
+        </h1>
+        <Button asChild variant="outline">
+          <Link href={`/pedir/${token}`}>Volver al catálogo</Link>
+        </Button>
+      </main>
+    );
+  }
+
+  // ─── Render ───────────────────────────────────────────────────────
+  return (
+    <div className="flex min-h-dvh flex-col bg-background">
+      <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-border bg-background/95 px-4 py-3 backdrop-blur md:px-6">
+        <Button asChild variant="ghost" size="icon-sm" aria-label="Volver">
+          <Link href={`/pedir/${token}`}>
+            <ArrowLeft className="size-4" />
+          </Link>
+        </Button>
+        <h1 className="font-serif text-xl text-primary md:text-2xl">
+          Confirmar pedido
+        </h1>
+      </header>
+
+      <form
+        onSubmit={(e) => e.preventDefault()}
+        className="flex-1 px-4 py-6 pb-40 md:px-6"
+      >
+        <div className="mx-auto flex max-w-xl flex-col gap-5">
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-serif text-lg">
+                Resumen del pedido
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              {cartItems.map((it, idx) => (
+                <div key={idx} className="flex items-baseline justify-between gap-3 text-sm">
+                  <div className="min-w-0">
+                    <p className="font-medium text-foreground">
+                      {it.qty} × {it.productName}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {it.sizeLabel}
+                    </p>
+                    {it.flavors.length >= 1 ? (
+                      <p className="text-xs text-muted-foreground">
+                        {it.flavors.map((f) => f.name).join(" · ")}
+                      </p>
+                    ) : null}
+                  </div>
+                  <span className="tabular-nums">
+                    {formatCop(it.unitPriceCents * it.qty)}
+                  </span>
+                </div>
+              ))}
+              <Separator />
+              <div className="flex items-baseline justify-between">
+                <span className="text-sm text-muted-foreground">Total</span>
+                <span className="font-serif text-2xl text-foreground tabular-nums">
+                  {formatCop(total)}
+                </span>
+              </div>
+              {isPickup ? (
+                <div className="flex items-center gap-2 rounded-md border border-secondary/50 bg-secondary/15 px-3 py-2 text-sm text-foreground">
+                  <Store className="size-4 shrink-0 text-secondary-foreground" />
+                  <span className="font-medium">Recoger en el local</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 rounded-md border border-success/30 bg-success/10 px-3 py-2 text-sm text-foreground">
+                  <Bike className="size-4 shrink-0 text-success" />
+                  <span className="font-medium">Domicilio incluido</span>
+                </div>
+              )}
+              {cartItems.some((it) => it.flavors.length >= 2) ? (
+                <div className="flex items-start gap-2 rounded-md border border-secondary/50 bg-secondary/15 px-3 py-2 text-sm text-foreground">
+                  <Info className="mt-0.5 size-4 shrink-0 text-secondary-foreground" />
+                  <p>
+                    Las pizzas con <strong>mitad y mitad</strong> se cobran al
+                    valor más alto de los sabores combinados.
+                  </p>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+
+          {/* ─── Switch: Domicilio vs Recoger en el local ─── */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-serif text-lg">
+                ¿Cómo lo prefieres?
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setValue("deliveryType", "delivery")}
+                  className={cn(
+                    "flex min-h-20 flex-col items-center justify-center gap-1 rounded-2xl px-3 py-3 text-sm font-medium transition-colors",
+                    deliveryType === "delivery"
+                      ? "bg-secondary text-secondary-foreground"
+                      : "border border-border bg-background text-foreground hover:bg-accent",
+                  )}
+                  aria-pressed={deliveryType === "delivery"}
+                >
+                  <Bike className="size-5" />
+                  <span className="leading-tight">Domicilio</span>
+                  <span className="text-[11px] leading-tight opacity-70">
+                    Te lo llevamos
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setValue("deliveryType", "pickup")}
+                  className={cn(
+                    "flex min-h-20 flex-col items-center justify-center gap-1 rounded-2xl px-3 py-3 text-sm font-medium transition-colors",
+                    deliveryType === "pickup"
+                      ? "bg-secondary text-secondary-foreground"
+                      : "border border-border bg-background text-foreground hover:bg-accent",
+                  )}
+                  aria-pressed={deliveryType === "pickup"}
+                >
+                  <Store className="size-5" />
+                  <span className="leading-tight">Recoger en el local</span>
+                  <span className="text-[11px] leading-tight opacity-70">
+                    Tú pasas por él
+                  </span>
+                </button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-serif text-lg">Tus datos</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <div>
+                <Label htmlFor="customerName">Nombre completo</Label>
+                <Input
+                  id="customerName"
+                  {...register("customerName")}
+                  className="mt-1"
+                />
+                {formState.errors.customerName ? (
+                  <p className="mt-1 text-sm text-destructive">
+                    {formState.errors.customerName.message}
+                  </p>
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* ─── Sección: Dirección estructurada (formato Colombia) ─── */}
+          {isPickup ? (
+            <Card>
+              <CardContent className="flex items-start gap-3 p-4">
+                <MapPin className="mt-0.5 size-5 shrink-0 text-secondary-foreground" />
+                <div className="flex flex-col gap-1">
+                  <p className="font-medium text-foreground">
+                    Recoger en el local
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {settings.business_address ?? "—"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Listo en aproximadamente {settings.pickup_prep_min} minutos
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-serif text-lg">
+                Dirección de entrega
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              {usingSavedAddress && profile?.lastAddress ? (
+                <SavedAddressChip
+                  summary={formatAddressSummary(profile.lastAddress)}
+                  onChange={() => {
+                    form.resetField("street", { defaultValue: "" });
+                    form.resetField("complex_name", { defaultValue: "" });
+                    form.resetField("tower", { defaultValue: "" });
+                    form.resetField("apartment", { defaultValue: "" });
+                    form.resetField("neighborhood", { defaultValue: "" });
+                    form.resetField("references", { defaultValue: "" });
+                    form.setValue("housingType", "casa");
+                    setUsingSavedAddress(false);
+                  }}
+                  className="mb-1"
+                />
+              ) : null}
+              <div>
+                <Label htmlFor="street">Dirección (calle / carrera)</Label>
+                <Input
+                  id="street"
+                  placeholder="Cll 63b # 105-95"
+                  {...register("street")}
+                  className="mt-1"
+                />
+                {formState.errors.street ? (
+                  <p className="mt-1 text-sm text-destructive">
+                    {formState.errors.street.message}
+                  </p>
+                ) : null}
+              </div>
+
+              <div>
+                <Label>Tipo de vivienda</Label>
+                <div className="mt-1 grid grid-cols-3 gap-2">
+                  {HOUSING_OPTIONS.map((opt) => {
+                    const Icon = opt.icon;
+                    const active = housingType === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => handleHousingChange(opt.value)}
+                        className={cn(
+                          "flex min-h-12 flex-col items-center justify-center gap-1 rounded-md border border-border px-3 py-2 text-sm transition-colors",
+                          active
+                            ? "border-primary bg-accent text-foreground"
+                            : "text-muted-foreground hover:bg-accent/40",
+                        )}
+                      >
+                        <Icon className="size-4" />
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {housingType === "edificio" || housingType === "conjunto" ? (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className={cn(housingType === "conjunto" && "md:col-span-2")}>
+                    <Label htmlFor="complex_name">
+                      {housingType === "conjunto"
+                        ? "Nombre del conjunto"
+                        : "Nombre del edificio"}
+                    </Label>
+                    <Input
+                      id="complex_name"
+                      {...register("complex_name")}
+                      className="mt-1"
+                    />
+                  </div>
+                  {housingType === "conjunto" ? (
+                    <div>
+                      <Label htmlFor="tower">Torre #</Label>
+                      <Input
+                        id="tower"
+                        inputMode="numeric"
+                        {...register("tower")}
+                        className="mt-1"
+                      />
+                    </div>
+                  ) : null}
+                  <div>
+                    <Label htmlFor="apartment">Apto #</Label>
+                    <Input
+                      id="apartment"
+                      {...register("apartment")}
+                      className="mt-1"
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              <div>
+                <Label htmlFor="neighborhood">Barrio</Label>
+                <Controller
+                  control={control}
+                  name="neighborhood"
+                  render={({ field }) => (
+                    <NeighborhoodCombobox
+                      id="neighborhood"
+                      value={field.value ?? ""}
+                      onChange={field.onChange}
+                    />
+                  )}
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="references">Referencias / indicaciones</Label>
+                <p className="mt-0.5 text-sm text-foreground/80">
+                  Pista para que el domiciliario te encuentre rápido
+                </p>
+                <Textarea
+                  id="references"
+                  rows={2}
+                  placeholder="Ej: portón verde, timbre dañado…"
+                  {...register("references")}
+                  className="mt-1"
+                />
+              </div>
+
+            </CardContent>
+          </Card>
+          )}
+
+          {/* ─── Sección: Método de pago + comprobante (camino A) ─── */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-serif text-lg">
+                Método de pago
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <Controller
+                control={control}
+                name="paymentMethod"
+                render={({ field }) => (
+                  <RadioGroup
+                    value={field.value}
+                    onValueChange={field.onChange}
+                    className="grid grid-cols-2 gap-2"
+                  >
+                    {PAYMENT_METHODS.map((m) => {
+                      const active = field.value === m;
+                      return (
+                        <Label
+                          key={m}
+                          htmlFor={`pm-${m}`}
+                          className={cn(
+                            "flex cursor-pointer items-center justify-between rounded-md border border-border px-3 py-3 text-sm transition-colors",
+                            active && "border-primary bg-accent",
+                          )}
+                        >
+                          <span>{PAYMENT_LABEL[m]}</span>
+                          <RadioGroupItem id={`pm-${m}`} value={m} />
+                        </Label>
+                      );
+                    })}
+                  </RadioGroup>
+                )}
+              />
+
+              {needsProof ? (
+                <div className="mt-2 flex flex-col gap-3 rounded-md border border-dashed border-border bg-muted/40 p-3">
+                  <div className="text-sm">
+                    <p className="font-medium text-foreground">
+                      Cuenta para transferir
+                    </p>
+                    <ul className="mt-1 flex flex-col gap-0.5 text-muted-foreground">
+                      {paymentMethod === "nequi" &&
+                      settings.payment_accounts.nequi ? (
+                        <li>Nequi: {settings.payment_accounts.nequi}</li>
+                      ) : null}
+                      {paymentMethod === "bancolombia" &&
+                      settings.payment_accounts.bancolombia ? (
+                        <li>
+                          Bancolombia: {settings.payment_accounts.bancolombia}
+                        </li>
+                      ) : null}
+                      {paymentMethod === "llave" &&
+                      settings.payment_accounts.llave ? (
+                        <li>Llave: {settings.payment_accounts.llave}</li>
+                      ) : null}
+                    </ul>
+                  </div>
+
+                  <div className="space-y-3">
+                    <Label
+                      htmlFor="proofFile"
+                      className="text-base font-medium text-foreground"
+                    >
+                      Comprobante de pago
+                    </Label>
+
+                    <label
+                      htmlFor="proofFile"
+                      className={cn(
+                        "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-6 text-center transition-colors",
+                        proofFile
+                          ? "border-primary/60 bg-primary/5"
+                          : "border-border hover:border-primary/50 hover:bg-muted/40",
+                      )}
+                    >
+                      <Upload
+                        className={cn(
+                          "size-6",
+                          proofFile ? "text-primary" : "text-muted-foreground",
+                        )}
+                        aria-hidden
+                      />
+                      {proofFile ? (
+                        <>
+                          <p className="text-sm font-medium text-foreground">
+                            {proofFile.name}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {Math.round(proofFile.size / 1024)} KB · toca para
+                            cambiar
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-sm font-medium text-foreground">
+                            Sube aquí tu comprobante
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            JPG, PNG o WEBP — máx 5 MB
+                          </p>
+                        </>
+                      )}
+                    </label>
+                    <Input
+                      id="proofFile"
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={handleProofChange}
+                      className="sr-only"
+                    />
+
+                    {proofError ? (
+                      <p className="text-sm text-destructive">{proofError}</p>
+                    ) : null}
+
+                    <div className="flex items-start gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                      <MessageCircle
+                        className="mt-0.5 size-3.5 shrink-0"
+                        aria-hidden
+                      />
+                      <span>
+                        Si tienes problemas para subir el archivo aquí,
+                        escríbele a {settings.business_name} al WhatsApp
+                        donde recibiste este link.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-serif text-lg">
+                Notas adicionales (opcional)
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Textarea
+                rows={2}
+                placeholder="Sin cebolla, timbre dañado, etc."
+                {...register("notes")}
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="flex items-start gap-3 pt-6">
+              <Controller
+                control={control}
+                name="acceptedPolicies"
+                render={({ field }) => (
+                  <Checkbox
+                    id="acceptedPolicies"
+                    checked={field.value === true}
+                    onCheckedChange={(v) => field.onChange(v === true)}
+                    className="mt-0.5"
+                  />
+                )}
+              />
+              <Label
+                htmlFor="acceptedPolicies"
+                className="text-sm font-normal text-foreground"
+              >
+                Acepto que una vez confirmado no puedo cambiar el pedido. La
+                lechera y los condimentos vienen incluidos. El domicilio ya
+                está incluido en el precio.
+              </Label>
+            </CardContent>
+            {formState.errors.acceptedPolicies ? (
+              <p className="px-6 pb-4 text-sm text-destructive">
+                {formState.errors.acceptedPolicies.message}
+              </p>
+            ) : null}
+          </Card>
+
+          <Button
+            type="button"
+            variant="outline"
+            size="lg"
+            onClick={handleCancel}
+            className="h-12 w-full"
+          >
+            <X className="size-5" />
+            Cancelar pedido
+          </Button>
+        </div>
+
+        {/* ─── Footer fijo: total + CTA confirmar (mobile-first) ─── */}
+        <div
+          className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 px-4 pt-3 pb-4 backdrop-blur md:px-6"
+          style={{
+            paddingBottom: "calc(1rem + env(safe-area-inset-bottom))",
+          }}
+        >
+          <div className="mx-auto flex max-w-xl items-center justify-between gap-3">
+            <div className="flex flex-col">
+              <span className="text-xs text-muted-foreground">Total</span>
+              <span className="font-serif text-xl text-foreground tabular-nums">
+                {formatCop(total)}
+              </span>
+            </div>
+            {/* L10: con Twilio sandbox el camino B (comprobante por
+                WhatsApp) NO funciona; obligamos al cliente a subir el
+                archivo aquí cuando elige transferencia. Cuando Meta
+                vuelva (B9 del LAUNCH), revertir esta condición. */}
+            <Button
+              type="button"
+              variant="success"
+              size="lg"
+              className="h-12 flex-1 text-base"
+              disabled={submitting || (needsProof && !proofFile)}
+              onClick={handleSubmit(() => setReviewOpen(true))}
+            >
+              {submitting ? (
+                <Loader2 className="size-5 animate-spin" />
+              ) : (
+                "Confirmar pedido"
+              )}
+            </Button>
+          </div>
+        </div>
+      </form>
+
+      <Sheet open={reviewOpen} onOpenChange={setReviewOpen}>
+        <SheetContent
+          side="bottom"
+          className="theme-heritage max-h-[90dvh] overflow-y-auto"
+        >
+          <SheetHeader>
+            <SheetTitle>Revisa tu pedido</SheetTitle>
+            <SheetDescription>
+              Verifica los datos antes de confirmar
+            </SheetDescription>
+          </SheetHeader>
+          <div className="px-4 pb-4">
+            <CheckoutReview
+              cartItems={cartItems}
+              total={total}
+              values={form.getValues()}
+              proofFile={proofFile}
+              paymentLabel={PAYMENT_LABEL[form.getValues("paymentMethod")]}
+              businessAddress={settings.business_address}
+            />
+          </div>
+          <SheetFooter className="flex-row gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setReviewOpen(false)}
+              disabled={submitting}
+              className="min-h-12 flex-1"
+            >
+              Editar
+            </Button>
+            <Button
+              type="button"
+              variant="success"
+              onClick={() => onSubmit(form.getValues())}
+              disabled={submitting}
+              className="min-h-12 flex-1"
+            >
+              {submitting ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : null}
+              Sí, confirmar pedido
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+    </div>
+  );
+}

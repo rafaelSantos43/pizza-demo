@@ -1,0 +1,96 @@
+-- =====================================================
+-- 0003_delay_alerts.sql
+-- PRD §5 F8: alerta proactiva de retraso. pg_cron corre cada 2 min
+-- y dispara el Route Handler /api/cron/delay-alerts (Next) que marca
+-- orders.delayed + notifica al cliente una sola vez por pedido.
+--
+-- Requiere Supabase plan Pro (pg_cron no está habilitado en Free).
+-- Idempotente: re-correr no debe romper.
+-- =====================================================
+
+create extension if not exists pg_cron with schema extensions;
+create extension if not exists pg_net with schema extensions;
+
+create table if not exists cron_config (
+  key text primary key,
+  value text not null,
+  updated_at timestamptz not null default now()
+);
+
+alter table cron_config enable row level security;
+
+drop policy if exists cron_config_service_role_all on cron_config;
+create policy cron_config_service_role_all on cron_config
+  for all to public
+  using (auth.role() = 'service_role')
+  with check (auth.role() = 'service_role');
+
+insert into cron_config (key, value) values
+  ('delay_alerts_url', 'https://REEMPLAZAR-CON-DOMINIO/api/cron/delay-alerts'),
+  ('cron_secret', 'REEMPLAZAR-CON-SECRET-LARGO-ALEATORIO')
+on conflict (key) do nothing;
+
+create or replace function public.run_delay_alerts_job()
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_url text;
+  v_secret text;
+  v_request_id bigint;
+begin
+  select value into v_url from cron_config where key = 'delay_alerts_url';
+  select value into v_secret from cron_config where key = 'cron_secret';
+
+  if v_url is null or v_url = '' or v_url like '%REEMPLAZAR%' then
+    raise notice 'delay_alerts_url no configurado, skipping';
+    return;
+  end if;
+
+  select net.http_post(
+    url := v_url,
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || v_secret,
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb,
+    timeout_milliseconds := 10000
+  ) into v_request_id;
+end;
+$$;
+
+select
+  case
+    when exists (select 1 from cron.job where jobname = 'delay_alerts_every_2min')
+      then cron.unschedule('delay_alerts_every_2min')
+    else null
+  end;
+
+select cron.schedule(
+  'delay_alerts_every_2min',
+  '*/2 * * * *',
+  $CRON$ select public.run_delay_alerts_job(); $CRON$
+);
+
+-- =====================================================
+-- Notas de deploy (leer antes de aplicar en prod):
+--
+-- 1. pg_cron requiere plan Supabase Pro. En Free esta migration fallará en
+--    el CREATE EXTENSION. Si estás en Free, saltala y migra cuando subas
+--    de plan.
+--
+-- 2. Después de aplicar, UPDATE los dos rows de cron_config desde
+--    Supabase Studio → Table editor → cron_config:
+--      - delay_alerts_url → https://<dominio-vercel>/api/cron/delay-alerts
+--      - cron_secret      → el mismo valor que la env var CRON_SECRET
+--        del deploy de Next (generar con `openssl rand -base64 32`).
+--
+-- 3. Verificar que el cron quedó programado:
+--      select * from cron.job where jobname = 'delay_alerts_every_2min';
+--    y ver el historial:
+--      select * from cron.job_run_details
+--        where jobid = (select jobid from cron.job where jobname = 'delay_alerts_every_2min')
+--        order by start_time desc limit 20;
+-- =====================================================

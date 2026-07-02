@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "stitch": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "export STITCH_ACCESS_TOKEN=$(gcloud auth print-access-token) && exec npx -y @_davideast/stitch-mcp proxy"
+      ],
+      "env": {
+        "GOOGLE_CLOUD_PROJECT": "parastich41078"
+      }
+    }
+  }
+}
